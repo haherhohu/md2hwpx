@@ -4,7 +4,7 @@ import * as fs from "fs";
 
 export class HwpxGenerator {
     // 동적으로 생성할 스타일 ID들을 저장하는 객체
-    private styleIds = { bold: 0, ul: 0, h1: 0, h2: 0, h3: 0 };
+    private styleIds = { bold: 0, ul: 0, h1: 0, h2: 0, h3: 0, h4: 0, h5: 0, h6: 0 };
 
     // ★ 추가: 문단/표 등에 부여할 고유 ID 카운터 (안전하게 10억부터 시작)
     private currentElementId: number = 1000000000;
@@ -68,6 +68,9 @@ export class HwpxGenerator {
                     h1: currentItemCnt + 2,
                     h2: currentItemCnt + 3,
                     h3: currentItemCnt + 4,
+                    h4: currentItemCnt + 5,
+                    h5: currentItemCnt + 6,
+                    h6: currentItemCnt + 7,
                 };
 
                 const baseStyleMatch = headerXml.match(new RegExp(`<${ns}:charPr\\s+id="0"([^>]*)>([\\s\\S]*?)<\\/${ns}:charPr>`));
@@ -86,6 +89,9 @@ export class HwpxGenerator {
                     <${ns}:charPr id="${this.styleIds.h1}" ${setHeight(attrs, "1600")}>${inner}<${ns}:bold>1</${ns}:bold></${ns}:charPr>
                     <${ns}:charPr id="${this.styleIds.h2}" ${setHeight(attrs, "1400")}>${inner}<${ns}:bold>1</${ns}:bold></${ns}:charPr>
                     <${ns}:charPr id="${this.styleIds.h3}" ${setHeight(attrs, "1200")}>${inner}<${ns}:bold>1</${ns}:bold></${ns}:charPr>
+                    <${ns}:charPr id="${this.styleIds.h4}" ${setHeight(attrs, "1200")}>${inner}<${ns}:bold>1</${ns}:bold></${ns}:charPr>
+                    <${ns}:charPr id="${this.styleIds.h5}" ${setHeight(attrs, "1200")}>${inner}<${ns}:bold>1</${ns}:bold></${ns}:charPr>
+                    <${ns}:charPr id="${this.styleIds.h6}" ${setHeight(attrs, "1200")}>${inner}<${ns}:bold>1</${ns}:bold></${ns}:charPr>
                     `;
 
                     headerXml = headerXml.replace(new RegExp(`</${ns}:charProperties>`), `${customStyles}</${ns}:charProperties>`);
@@ -163,13 +169,19 @@ export class HwpxGenerator {
             // 타이틀 처리: 글자 크기를 키운 문단으로 처리 (간략화된 예시)
             case "heading":
                 // 헤딩 레벨에 따라 폰트 사이즈가 지정된 ID 매핑 (H1:16pt, H2:14pt, H3:12pt)
-                let hId = this.styleIds.h3;
+                let hId = this.styleIds.h6;
                 if (token.depth === 1) {
                     hId = this.styleIds.h1;
                 } else if (token.depth === 2) {
                     hId = this.styleIds.h2;
+                } else if (token.depth === 3) {
+                    hId = this.styleIds.h3;
+                } else if (token.depth === 4) {
+                    hId = this.styleIds.h4;
+                } else if (token.depth === 5) {
+                    hId = this.styleIds.h5;
                 }
-                xml = this.createParagraphTag(this.parseInlineToRuns(token.text, hId));
+                xml = this.createParagraphTag(this.parseInlineToRuns(hId === this.styleIds.h1 ? "" : "\n" + token.text + "\n", hId));
                 break;
 
             case "paragraph":
