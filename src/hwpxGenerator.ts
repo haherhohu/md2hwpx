@@ -45,6 +45,8 @@ export class HwpxGenerator {
             if (headerXmlFile) {
                 let headerXml = await headerXmlFile.async("string");
 
+                headerXml = this.injectBorderFillToHeader(headerXml);
+
                 const nsMatch = headerXml.match(/<([a-zA-Z]+):charProperties/);
                 const ns = nsMatch ? nsMatch[1] : "hh";
 
@@ -126,7 +128,28 @@ export class HwpxGenerator {
             throw error;
         }
     }
+    private injectBorderFillToHeader(headerXmlString: string): string {
+        const newBorderFill = `
+            <hh:borderFill id="3" threeD="0" shadow="0" backColor="none" zeroShape="0">
+                <hh:leftBorder type="SOLID" width="0.1 mm" color="#000000"/>
+                <hh:rightBorder type="SOLID" width="0.1 mm" color="#000000"/>
+                <hh:topBorder type="SOLID" width="0.1 mm" color="#000000"/>
+                <hh:bottomBorder type="SOLID" width="0.1 mm" color="#000000"/>
+            </hh:borderFill>
+        `;
 
+        // 1. itemCnt 속성 증가 (기존 값 + 1)
+        // 무조건 "3"으로 박기보다 기존 숫자를 읽어 1을 더하는 것이 템플릿 변경 시 조금 더 안전합니다.
+        let updatedXml = headerXmlString.replace(/(<hh:borderFills[^>]*?itemCnt=")(\d+)(")/, (match, prefix, currentCnt, suffix) => {
+            const newCnt = parseInt(currentCnt, 10) + 1;
+            return `${prefix}${newCnt}${suffix}`;
+        });
+
+        // 2. 닫는 태그 </hh:borderFills> 바로 앞에 새로운 태그 삽입
+        updatedXml = updatedXml.replace(/(<\/hh:borderFills>)/, `${newBorderFill}$1`);
+
+        return updatedXml;
+    }
     /**
      * 마크다운 토큰을 HWPX XML로 변환합니다.
      * @param token 변환할 마크다운 토큰
@@ -246,34 +269,62 @@ export class HwpxGenerator {
     // [신규 수정] 한글 규격에 완벽히 호환되는 표 생성기
     private createTableXml(rows: string[][]): string {
         const tableId = this.generateHwpId();
-        // borderFillIDRef="1" 유지 (기본 테두리 참조)
-        let xml = `<hp:tbl id="${tableId}" zOrder="0" numberingType="table" textWrap="topAndBottom" halfFont="0" borderFillIDRef="1" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">`;
-        xml += `<hp:sz width="14000" widthUnit="0" height="0" heightUnit="0"/>`;
-        xml += `<hp:pos treatAsChar="1"/>`;
+        const rowCount = rows.length;
+        const colCount = rows.length > 0 ? rows[0].length : 0;
 
-        // 오류의 원인이었던 <hp:margin>을 삭제하고 규격에 맞는 여백 태그 삽입
+        let xml = `<hp:tbl id="${tableId}" zOrder="0" numberingType="table" textWrap="topAndBottom" halfFont="0" borderFillIDRef="3" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0" rowCnt="${rowCount}" colCnt="${colCount}" cellSpacing="0">`;
+
+        // sz, pos, 마진 태그는 이 순서를 반드시 유지해야 합니다.
+        xml += `<hp:sz width="42000" widthRelTo="ABSOLUTE" height="0" heightRelTo="ABSOLUTE" protect="0"/>`;
+        xml += `<hp:pos treatAsChar="1"/>`;
         xml += `<hp:outMargin left="0" right="0" top="0" bottom="0"/>`;
-        xml += `<hp:inMargin left="141" right="141" top="141" bottom="141"/>`;
+        xml += `<hp:inMargin left="280" right="280" top="280" bottom="280"/>`;
+
+        const widths = this.calculateColumnWidths(
+            rows[0].map((cell) => cell.length),
+            42000,
+        );
 
         rows.forEach((row, rowIndex) => {
             xml += `<hp:tr>`;
-            xml += `<hp:sz width="14000" height="0"/>`; // 행 높이 지정 필수
-
-            // 각 셀의 너비를 열 개수에 맞게 균등 배분
-            const cellWidth = Math.floor(14000 / row.length);
+            //const cellWidth = Math.floor(42000 / row.length);
 
             row.forEach((cellText, colIndex) => {
-                xml += `<hp:tc name="" header="0" hasMargin="0" protect="0" borderFillIDRef="1">`;
+                const cellWidth = widths[colIndex];
+                xml += `<hp:tc name="" header="0" hasMargin="1" protect="0" borderFillIDRef="3">`;
+
+                // [핵심 교정] hp:subList가 셀 내부에서 반드시 1순위로 등장해야 합니다.
+                xml += `<hp:subList>${this.createParagraphTag(this.parseInlineToRuns(cellText))}</hp:subList>`;
+
+                // 그 외 셀 주소 및 크기 속성들은 subList 뒤에 순서대로 배치합니다.
                 xml += `<hp:cellAddr colAddr="${colIndex}" rowAddr="${rowIndex}" />`;
                 xml += `<hp:cellSpan colSpan="1" rowSpan="1" />`;
-                xml += `<hp:cellSz width="${cellWidth}" height="0"/>`; // 셀 너비 지정 필수
-                xml += `<hp:subList>${this.createParagraphTag(this.parseInlineToRuns(cellText))}</hp:subList>`;
+                xml += `<hp:cellSz width="${cellWidth}" height="1500"/>`;
+                xml += `<hp:cellMargin left="280" right="280" top="280" bottom="280"/>`;
+                // 여기에 tcPr을 배치하여 상하좌우 테두리가 작동하도록 선언 (1은 활성화, 0은 비활성화)
+                xml += `<hp:tcPr leftBorder="1" rightBorder="1" topBorder="1" bottomBorder="1"/>`;
                 xml += `</hp:tc>`;
             });
             xml += `</hp:tr>`;
         });
         xml += `</hp:tbl>`;
 
+        // hp:tbl 전체를 hp:run으로 한 번 감싼 후 문단(hp:p) 태그를 생성합니다.
         return this.createParagraphTag(`<hp:run>${xml}</hp:run>`);
+    }
+
+    private calculateColumnWidths(rowLengths: number[], totalAvailableWidth: number): number[] {
+        const totalChars = rowLengths.reduce((a, b) => a + b, 0);
+        // 각 열의 가중치를 계산 (글자 수 + 기본 보정값)
+        const weights = rowLengths.map((len) => Math.max(len + 2, 5)); // 최소 5단위 보장
+        const totalWeight = weights.reduce((a, b) => a + b, 0);
+
+        const widths = weights.map((w) => Math.floor(totalAvailableWidth * (w / totalWeight)));
+
+        // 오차 보정 (합계가 42000 되도록 마지막 셀에 나머지 추가)
+        const currentSum = widths.reduce((a, b) => a + b, 0);
+        widths[widths.length - 1] += totalAvailableWidth - currentSum;
+
+        return widths;
     }
 }
