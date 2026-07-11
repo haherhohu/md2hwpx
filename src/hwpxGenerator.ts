@@ -5,6 +5,7 @@ import * as fs from "fs";
 export class HwpxGenerator {
     // 동적으로 생성할 스타일 ID들을 저장하는 객체
     private styleIds = { bold: 0, ul: 0, h1: 0, h2: 0, h3: 0, h4: 0, h5: 0, h6: 0 };
+    private paraPrIds = { level1: 0, level2: 0, level3: 0 };
 
     // ★ 추가: 문단/표 등에 부여할 고유 ID 카운터 (안전하게 10억부터 시작)
     private currentElementId: number = 1000000000;
@@ -21,10 +22,10 @@ export class HwpxGenerator {
     /**
      * 한글 표준 규격에 맞는 기본 문단 태그를 생성하는 헬퍼 함수
      */
-    private createParagraphTag(runXml: string): string {
+    private createParagraphTag(runXml: string, paraPrId: number = 0): string {
         const id = this.generateHwpId();
         // 유저분이 뽑아주신 정석 양식 그대로 속성을 주입합니다.
-        return `<hp:p id="${id}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">${runXml}</hp:p>`;
+        return `<hp:p id="${id}" paraPrIDRef="${paraPrId}" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">${runXml}</hp:p>`;
     }
 
     /**
@@ -46,6 +47,7 @@ export class HwpxGenerator {
                 let headerXml = await headerXmlFile.async("string");
 
                 headerXml = this.injectBorderFillToHeader(headerXml);
+                headerXml = this.injectParagrphProperty(headerXml);
 
                 const nsMatch = headerXml.match(/<([a-zA-Z]+):charProperties/);
                 const ns = nsMatch ? nsMatch[1] : "hh";
@@ -156,6 +158,43 @@ export class HwpxGenerator {
 
         return updatedXml;
     }
+
+    private injectParagrphProperty(headerXml: string): string {
+        // 2. 문단 모양(paraPr) 들여쓰기 추가 - 개수(itemCnt) 조작
+        let currentParaCnt = 0;
+        headerXml = headerXml.replace(new RegExp(`<hh:paraProperties([^>]*)>`), (match, attrs) => {
+            const itemCntMatch = attrs.match(/itemCnt="(\d+)"/);
+            if (itemCntMatch) {
+                currentParaCnt = parseInt(itemCntMatch[1], 10);
+                return `<hh:paraProperties ` + attrs.replace(/itemCnt="\d+"/, `itemCnt="${currentParaCnt + 3}"`) + `>`;
+            }
+            return match;
+        });
+
+        this.paraPrIds = { level1: currentParaCnt, level2: currentParaCnt + 1, level3: currentParaCnt + 2 };
+
+        const baseParaMatch = headerXml.match(new RegExp(`<hh:paraPr\\s+id="0"([^>]*)>([\\s\\S]*?)<\\/hh:paraPr>`));
+        if (baseParaMatch) {
+            let attrs = baseParaMatch[1];
+            let inner = baseParaMatch[2];
+
+            // ★ 핵심: margin 태그 역시 기존 것을 찾아 속성만 덮어씌움
+            const setMargin = (xmlStr: string, leftMargin: number) => {
+                return xmlStr.replace(
+                    new RegExp(`<hh:margin([^>]*)>([\\s\\S]*?)<\\/hh:margin>`),
+                    `<hh:margin><hc:intent value="${-leftMargin}" unit="HWPUNIT"/><hc:left value="0" unit="HWPUNIT"/><hc:right value="0" unit="HWPUNIT"/><hc:prev value="0" unit="HWPUNIT"/><hc:next value="0" unit="HWPUNIT"/></hh:margin>`,
+                );
+            };
+
+            const customParaPrs = `
+                    <hh:paraPr id="${this.paraPrIds.level1}" ${attrs}>${setMargin(inner, 1500)}</hh:paraPr>
+                    <hh:paraPr id="${this.paraPrIds.level2}" ${attrs}>${setMargin(inner, 2600)}</hh:paraPr>
+                    <hh:paraPr id="${this.paraPrIds.level3}" ${attrs}>${setMargin(inner, 3200)}</hh:paraPr>
+                    `;
+            headerXml = headerXml.replace(new RegExp(`</hh:paraProperties>`), `${customParaPrs}</hh:paraProperties>`);
+        }
+        return headerXml;
+    }
     /**
      * 마크다운 토큰을 HWPX XML로 변환합니다.
      * @param token 변환할 마크다운 토큰
@@ -181,7 +220,7 @@ export class HwpxGenerator {
                 } else if (token.depth === 5) {
                     hId = this.styleIds.h5;
                 }
-                xml = this.createParagraphTag(this.parseInlineToRuns(hId === this.styleIds.h1 ? "" : "\n" + token.text + "\n", hId));
+                xml = this.createParagraphTag(this.parseInlineToRuns((hId === this.styleIds.h1 ? "" : "\n") + token.text + "\n", hId));
                 break;
 
             case "paragraph":
@@ -199,19 +238,21 @@ export class HwpxGenerator {
                 // 수준에 따른 기호 설정 (0: □, 1: ◦, 2: •)
                 // 다중 목록 완벽 분리 로직: 텍스트와 하위 목록(list)을 분리하여 처리
                 const bullet = listLevel === 0 ? "□ " : listLevel === 1 ? "  ◦ " : "    • ";
+                // 문단속성적용
+                const paraprid = listLevel === 0 ? 20 : listLevel === 1 ? 21 : 22;
                 if (token.tokens && token.tokens.length > 0) {
                     let isFirstText = true;
                     for (const child of token.tokens) {
                         if (child.type === "text" || child.type === "paragraph") {
                             const prefix = isFirstText ? bullet : "    "; // 첫 줄에만 기호 붙이기
-                            xml += this.createParagraphTag(this.parseInlineToRuns(`${prefix}${child.text}`));
+                            xml += this.createParagraphTag(this.parseInlineToRuns(`${prefix}${child.text}`), paraprid);
                             isFirstText = false;
                         } else if (child.type === "list") {
                             xml += this.convertTokenToXml(child, listLevel + 1); // 재귀 호출로 단계별 구분점 처리
                         }
                     }
                 } else {
-                    xml += this.createParagraphTag(this.parseInlineToRuns(`${bullet}${token.text}`));
+                    xml += this.createParagraphTag(this.parseInlineToRuns(`${bullet}${token.text}`), paraprid);
                 }
                 break;
 
