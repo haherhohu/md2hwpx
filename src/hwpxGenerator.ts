@@ -1,24 +1,32 @@
 import { marked } from "marked";
 import * as JSZip from "jszip";
 import * as fs from "fs";
-import * as path from "path";
 
 export class HwpxGenerator {
-    /**
-     * 한글 문단 고유 ID를 생성합니다. (10자리 무작위 정수)
-     */
+    // 동적으로 생성할 스타일 ID들을 저장하는 객체
+    private styleIds = { bold: 0, ul: 0, h1: 0, h2: 0, h3: 0 };
+
+    // ★ 추가: 문단/표 등에 부여할 고유 ID 카운터 (안전하게 10억부터 시작)
+    private currentElementId: number = 1000000000;
+
+    // ★ 수정: 랜덤 난수 대신 1씩 증가하는 순차적 ID 반환
     private generateHwpId(): number {
+        return this.currentElementId++;
+    }
+
+    private generateHwpRandomId(): number {
         return Math.floor(Math.random() * 9000000000) + 1000000000;
     }
 
     /**
      * 한글 표준 규격에 맞는 기본 문단 태그를 생성하는 헬퍼 함수
      */
-    private createParagraphTag(contentXml: string): string {
+    private createParagraphTag(runXml: string): string {
         const id = this.generateHwpId();
         // 유저분이 뽑아주신 정석 양식 그대로 속성을 주입합니다.
-        return `<hp:p id="${id}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run><hp:t>${contentXml}</hp:t></hp:run></hp:p>`;
+        return `<hp:p id="${id}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">${runXml}</hp:p>`;
     }
+
     /**
      * 마크다운 텍스트를 받아 HWPX 파일로 변환하여 저장합니다.
      * @param mdContent 변환할 마크다운 텍스트
@@ -27,25 +35,77 @@ export class HwpxGenerator {
      */
     public async generate(mdContent: string, templatePath: string, outputPath: string) {
         try {
+            const { marked } = require("marked");
+            // 3. 템플릿 HWPX 로드 및 XML 주입
+            const templateBuffer = fs.readFileSync(templatePath);
+            const zip = await JSZip.loadAsync(templateBuffer);
+
+            // 1. [핵심] header.xml을 먼저 조작하여 순차적 ID 발급 및 글자 크기(헤딩) 동적 생성
+            const headerXmlFile = zip.file("Contents/header.xml");
+            if (headerXmlFile) {
+                let headerXml = await headerXmlFile.async("string");
+
+                const nsMatch = headerXml.match(/<([a-zA-Z]+):charProperties/);
+                const ns = nsMatch ? nsMatch[1] : "hh";
+
+                let currentItemCnt = 0;
+                // 현재 등록된 스타일 개수를 파악하고 5개를 추가로 늘려줍니다.
+                headerXml = headerXml.replace(new RegExp(`<${ns}:charProperties([^>]*)>`), (match, attrs) => {
+                    const itemCntMatch = attrs.match(/itemCnt="(\d+)"/);
+                    if (itemCntMatch) {
+                        currentItemCnt = parseInt(itemCntMatch[1], 10);
+                        return `<${ns}:charProperties ` + attrs.replace(/itemCnt="\d+"/, `itemCnt="${currentItemCnt + 5}"`) + `>`;
+                    }
+                    return match;
+                });
+
+                // 발급받은 순차적 ID 등록
+                this.styleIds = {
+                    bold: currentItemCnt,
+                    ul: currentItemCnt + 1,
+                    h1: currentItemCnt + 2,
+                    h2: currentItemCnt + 3,
+                    h3: currentItemCnt + 4,
+                };
+
+                const baseStyleMatch = headerXml.match(new RegExp(`<${ns}:charPr\\s+id="0"([^>]*)>([\\s\\S]*?)<\\/${ns}:charPr>`));
+                if (baseStyleMatch) {
+                    let attrs = baseStyleMatch[1];
+                    let inner = baseStyleMatch[2];
+
+                    // 높이(폰트 사이즈)를 조작하는 헬퍼 함수 (1000 = 10pt)
+                    const setHeight = (attrStr: string, height: string) => {
+                        return attrStr.includes("height=") ? attrStr.replace(/height="\d+"/, `height="${height}"`) : attrStr + ` height="${height}"`;
+                    };
+
+                    const customStyles = `
+                    <${ns}:charPr id="${this.styleIds.bold}" ${attrs}>${inner}<${ns}:bold>1</${ns}:bold></${ns}:charPr>
+                    <${ns}:charPr id="${this.styleIds.ul}" ${attrs}>${inner}<${ns}:underline type="bottom" shape="solid" color="000000"/></${ns}:charPr>
+                    <${ns}:charPr id="${this.styleIds.h1}" ${setHeight(attrs, "1600")}>${inner}<${ns}:bold>1</${ns}:bold></${ns}:charPr>
+                    <${ns}:charPr id="${this.styleIds.h2}" ${setHeight(attrs, "1400")}>${inner}<${ns}:bold>1</${ns}:bold></${ns}:charPr>
+                    <${ns}:charPr id="${this.styleIds.h3}" ${setHeight(attrs, "1200")}>${inner}<${ns}:bold>1</${ns}:bold></${ns}:charPr>
+                    `;
+
+                    headerXml = headerXml.replace(new RegExp(`</${ns}:charProperties>`), `${customStyles}</${ns}:charProperties>`);
+                    zip.file("Contents/header.xml", headerXml);
+                }
+            }
+
+            // 2. 마크다운 변환 시작 (이제 styleIds가 정상적으로 세팅됨)
             // 1. 마크다운 파싱 (AST 추출)
             const tokens = marked.lexer(mdContent);
             let hwpxXmlContent = "";
-
             // 2. 토큰을 순회하며 HWPX XML 태그로 변환
             for (const token of tokens) {
                 hwpxXmlContent += this.convertTokenToXml(token);
             }
 
-            // 3. 템플릿 HWPX 로드 및 XML 주입
-            const templateBuffer = fs.readFileSync(templatePath);
-            const zip = await JSZip.loadAsync(templateBuffer);
-
+            // 3. 본문(section0.xml) 주입
             // HWPX 내부의 본문 파일인 section0.xml을 찾습니다.
             const sectionXmlFile = zip.file("Contents/section0.xml");
             if (!sectionXmlFile) {
                 throw new Error("템플릿 파일 형식이 올바르지 않습니다.");
             }
-
             let sectionXml = await sectionXmlFile.async("string");
 
             // 본문 영역(<hp:sec>)이 끝나는 지점 바로 앞에 우리가 만든 XML을 삽입합니다.
@@ -68,23 +128,33 @@ export class HwpxGenerator {
     }
 
     /**
-     * 마크다운 토큰을 OWPML(한글 XML)로 매핑하는 함수
+     * 마크다운 토큰을 HWPX XML로 변환합니다.
+     * @param token 변환할 마크다운 토큰
+     * @param listLevel 목록의 깊이 (기본값: 0)
+     * @returns 변환된 HWPX XML 문자열
      */
-    private convertTokenToXml2(token: marked.Token, listLevel: number = 0): string {
+    private convertTokenToXml(token: any, listLevel: number = 0): string {
         let xml = "";
 
         switch (token.type) {
+            // 타이틀 처리: 글자 크기를 키운 문단으로 처리 (간략화된 예시)
             case "heading":
-                // 타이틀 처리: 글자 크기를 키운 문단으로 처리 (간략화된 예시)
-                xml = `<hp:p><hp:run><hp:t>${this.parseInlineStyles(token.text)}</hp:t></hp:run></hp:p>`;
+                // 헤딩 레벨에 따라 폰트 사이즈가 지정된 ID 매핑 (H1:16pt, H2:14pt, H3:12pt)
+                let hId = this.styleIds.h3;
+                if (token.depth === 1) {
+                    hId = this.styleIds.h1;
+                } else if (token.depth === 2) {
+                    hId = this.styleIds.h2;
+                }
+                xml = this.createParagraphTag(this.parseInlineToRuns(token.text, hId));
                 break;
 
             case "paragraph":
-                xml = `<hp:p><hp:run><hp:t>${this.parseInlineStyles(token.text)}</hp:t></hp:run></hp:p>`;
+                xml = this.createParagraphTag(this.parseInlineToRuns(token.text));
                 break;
 
+            // 목록 처리: 들여쓰기 및 수준별 기호 삽입
             case "list":
-                // 목록 처리: 들여쓰기 및 수준별 기호 삽입
                 for (const item of token.items) {
                     xml += this.convertTokenToXml(item, listLevel);
                 }
@@ -92,211 +162,118 @@ export class HwpxGenerator {
 
             case "list_item":
                 // 수준에 따른 기호 설정 (0: □, 1: ◦, 2: •)
+                // 다중 목록 완벽 분리 로직: 텍스트와 하위 목록(list)을 분리하여 처리
                 const bullet = listLevel === 0 ? "□ " : listLevel === 1 ? "  ◦ " : "    • ";
-                xml = `<hp:p><hp:run><hp:t>${bullet}${this.parseInlineStyles(token.text)}</hp:t></hp:run></hp:p>`;
+                if (token.tokens && token.tokens.length > 0) {
+                    let isFirstText = true;
+                    for (const child of token.tokens) {
+                        if (child.type === "text" || child.type === "paragraph") {
+                            const prefix = isFirstText ? bullet : "    "; // 첫 줄에만 기호 붙이기
+                            xml += this.createParagraphTag(this.parseInlineToRuns(`${prefix}${child.text}`));
+                            isFirstText = false;
+                        } else if (child.type === "list") {
+                            xml += this.convertTokenToXml(child, listLevel + 1); // 재귀 호출로 단계별 구분점 처리
+                        }
+                    }
+                } else {
+                    xml += this.createParagraphTag(this.parseInlineToRuns(`${bullet}${token.text}`));
+                }
                 break;
 
             case "blockquote":
                 // 인용 박스 처리 (1칸 표)
                 // 표는 <hp:tbl>, 행은 <hp:tr>, 셀은 <hp:tc> 태그를 사용합니다.
-                const quoteText = this.parseInlineStyles(token.text);
-                xml = `
-                <hp:tbl>
-                    <hp:tr>
-                        <hp:tc>
-                            <hp:p><hp:run><hp:t>${quoteText}</hp:t></hp:run></hp:p>
-                        </hp:tc>
-                    </hp:tr>
-                </hp:tbl>`;
+                xml = this.createTableXml([[token.text]]);
                 break;
 
             case "table":
                 // 표 처리 로직 (행과 열을 순회하며 XML 구성)
-                xml += `<hp:tbl>`;
-                // 헤더
-                xml += `<hp:tr>`;
-                token.header.forEach((headerCell) => {
-                    xml += `<hp:tc><hp:p><hp:run><hp:t>${this.parseInlineStyles(headerCell.text)}</hp:t></hp:run></hp:p></hp:tc>`;
+                const rows: string[][] = [];
+                rows.push(token.header.map((cell: any) => cell.text));
+                token.rows.forEach((row: any) => {
+                    rows.push(row.map((cell: any) => cell.text));
                 });
-                xml += `</hp:tr>`;
-                // 본문
-                token.rows.forEach((row) => {
-                    xml += `<hp:tr>`;
-                    row.forEach((cell) => {
-                        xml += `<hp:tc><hp:p><hp:run><hp:t>${this.parseInlineStyles(cell.text)}</hp:t></hp:run></hp:p></hp:tc>`;
-                    });
-                    xml += `</hp:tr>`;
-                });
-                xml += `</hp:tbl>`;
+                xml = this.createTableXml(rows);
                 break;
 
             case "space":
-                xml = `<hp:p><hp:run><hp:t></hp:t></hp:run></hp:p>`; // 빈 줄
+                xml = this.createParagraphTag("<hp:run><hp:t></hp:t></hp:run>");
                 break;
 
             default:
                 // 이미지 처리는 압축 파일 내 'BinData/' 폴더 조작이 필요하여 기본 구조만 남깁니다.
-                if (token.raw.includes("![")) {
-                    xml = `<hp:p><hp:run><hp:t>[이미지 삽입 예정 영역: ${token.raw}]</hp:t></hp:run></hp:p>`;
+                if (token.raw) {
+                    xml = this.createParagraphTag(this.parseInlineToRuns(token.raw));
                 }
                 break;
         }
         return xml;
     }
-    // src/hwpxGenerator.ts 파일의 convertTokenToXml 함수를 아래의 안전한 코드로 교체해 보세요.
-    private convertTokenToXml3(token: marked.Token, listLevel: number = 0): string {
-        let xml = "";
 
-        switch (token.type) {
-            case "heading":
-                // 제목 구분을 위해 앞뒤로 줄바꿈 문자를 넣어 가독성 확보
-                xml = `<hp:p><hp:run><hp:t>[제목] ${this.parseInlineStyles(token.text)}</hp:t></hp:run></hp:p>`;
-                break;
-
-            case "paragraph":
-                xml = `<hp:p><hp:run><hp:t>${this.parseInlineStyles(token.text)}</hp:t></hp:run></hp:p>`;
-                break;
-
-            case "list":
-                for (const item of token.items) {
-                    xml += this.convertTokenToXml(item, listLevel);
-                }
-                break;
-
-            case "list_item":
-                const bullet = listLevel === 0 ? "□ " : listLevel === 1 ? "  ◦ " : "    • ";
-                xml = `<hp:p><hp:run><hp:t>${bullet}${this.parseInlineStyles(token.text)}</hp:t></hp:run></hp:p>`;
-                break;
-
-            case "blockquote":
-                // 복잡한 표 태그 대신 우선 일반 문단에 기호로 감싸서 안전하게 출력 테스트
-                xml = `<hp:p><hp:run><hp:t>[인용] ${this.parseInlineStyles(token.text)}</hp:t></hp:run></hp:p>`;
-                break;
-
-            case "table":
-                // 표 역시 깨질 확률이 높으므로 단순 텍스트로 치환하여 먼저 출력 확인
-                xml += `<hp:p><hp:run><hp:t>=== 표 시작 ===</hp:t></hp:run></hp:p>`;
-                token.header.forEach((headerCell) => {
-                    xml += `<hp:p><hp:run><hp:t>| ${this.parseInlineStyles(headerCell.text)} </hp:t></hp:run></hp:p>`;
-                });
-                token.rows.forEach((row) => {
-                    let rowText = "| ";
-                    row.forEach((cell) => {
-                        rowText += this.parseInlineStyles(cell.text) + " | ";
-                    });
-                    xml += `<hp:p><hp:run><hp:t>${rowText}</hp:t></hp:run></hp:p>`;
-                });
-                xml += `<hp:p><hp:run><hp:t>=== 표 끝 ===</hp:t></hp:run></hp:p>`;
-                break;
-
-            case "space":
-                xml = `<hp:p><hp:run><hp:t></hp:t></hp:run></hp:p>`;
-                break;
-
-            default:
-                xml = `<hp:p><hp:run><hp:t>${this.parseInlineStyles(token.raw)}</hp:t></hp:run></hp:p>`;
-                break;
-        }
-        return xml;
-    }
-    // src/hwpxGenerator.ts 파일의 convertTokenToXml 함수 내부를 아래처럼 좀 더 '한글 규격'에 맞게 수정해 보세요.
-    private convertTokenToXml4(token: marked.Token, listLevel: number = 0): string {
-        let xml = "";
-
-        // 한글 빈 문서의 기본 문단 모양 ID는 보통 0번입니다. 속성을 명시해 주면 한글이 훨씬 잘 인식합니다.
-        // <hp:p id="3121190098" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">
-        const defaultParaPr = 'paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"';
-        const defaultCharPr = 'charPrIDRef="0"';
-
-        switch (token.type) {
-            case "heading":
-                // 제목은 눈에 띄게 앞뒤로 특수 기호를 붙여서 텍스트 위주로 먼저 튀어나오게 유도합니다.
-                xml = `<hp:p ${defaultParaPr}><hp:run><hp:secPr><hp:charPr ${defaultCharPr}/></hp:secPr><hp:t>[■] ${this.parseInlineStyles(token.text)}</hp:t></hp:run></hp:p>`;
-                break;
-
-            case "paragraph":
-                xml = `<hp:p ${defaultParaPr}><hp:run><hp:t>${this.parseInlineStyles(token.text)}</hp:t></hp:run></hp:p>`;
-                break;
-
-            case "list":
-                for (const item of token.items) {
-                    xml += this.convertTokenToXml(item, listLevel);
-                }
-                break;
-
-            case "list_item":
-                const bullet = listLevel === 0 ? "□ " : listLevel === 1 ? "  ◦ " : "    • ";
-                xml = `<hp:p ${defaultParaPr}><hp:run><hp:t>${bullet}${this.parseInlineStyles(token.text)}</hp:t></hp:run></hp:p>`;
-                break;
-
-            case "space":
-                xml = `<hp:p ${defaultParaPr}><hp:run><hp:t></hp:t></hp:run></hp:p>`;
-                break;
-
-            default:
-                xml = `<hp:p ${defaultParaPr}><hp:run><hp:t>${this.parseInlineStyles(token.raw)}</hp:t></hp:run></hp:p>`;
-                break;
-        }
-        return xml;
-    }
-    private convertTokenToXml(token: marked.Token, listLevel: number = 0): string {
-        let xml = "";
-
-        switch (token.type) {
-            case "heading":
-                // 타이틀(제목) 처리
-                xml = this.createParagraphTag(`[■] ${this.parseInlineStyles(token.text)}`);
-                break;
-
-            case "paragraph":
-                // 일반 본문 처리
-                xml = this.createParagraphTag(this.parseInlineStyles(token.text));
-                break;
-
-            case "list":
-                for (const item of token.items) {
-                    xml += this.convertTokenToXml(item, listLevel);
-                }
-                break;
-
-            case "list_item":
-                // 구분점 및 수준 구분 처리 (□, ◦, •)
-                const bullet = listLevel === 0 ? "□ " : listLevel === 1 ? "  ◦ " : "    • ";
-                xml = this.createParagraphTag(`${bullet}${this.parseInlineStyles(token.text)}`);
-                break;
-
-            case "space":
-                // 빈 줄 처리
-                xml = this.createParagraphTag("");
-                break;
-
-            default:
-                xml = this.createParagraphTag(this.parseInlineStyles(token.raw));
-                break;
-        }
-        return xml;
-    }
-
+    // 인라인 스타일 분석기 (기본 ID를 주입받아 폰트 사이즈 유지 가능)
     /**
      * 텍스트 내의 볼드체, 밑줄 등을 처리합니다.
      */
-    private parseInlineStyles(text: string): string {
+    private parseInlineToRuns(text: string, defaultStyleId?: number): string {
         if (!text) {
-            return "";
+            return `<hp:run ${defaultStyleId ? `charPrIDRef="${defaultStyleId}"` : ""}><hp:t></hp:t></hp:run>`;
         }
 
-        let processed = text;
-
         // XML 특수문자 이스케이프 (태그 충돌 방지를 위해 가장 먼저 실행)
-        processed = processed.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        let processed = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
         // 볼드 및 밑줄은 텍스트 형태로 우선 구분해 둡니다.
         // 볼드체 처리 (**텍스트**) - 한글 XML에서 글꼴 속성 참조로 구현해야 하지만,
         // 텍스트 변환 과정의 직관성을 위해 HTML 태그 형태를 유지하거나 단순화하여 맵핑합니다.
-        processed = processed.replace(/\*\*(.*?)\*\*/g, "[볼드: $1]");
+        // 볼드와 밑줄 분리 (defaultStyleId가 있으면 기본 속성으로 복귀하도록 처리)
+        const defAttr = defaultStyleId ? `charPrIDRef="${defaultStyleId}"` : "";
+        processed = processed.replace(
+            /\*\*(.*?)\*\*/g,
+            `</hp:t></hp:run><hp:run charPrIDRef="${this.styleIds.bold}"><hp:t>$1</hp:t></hp:run><hp:run ${defAttr}><hp:t>`,
+        );
         // 밑줄 처리 (마크다운 표준이 아니므로 HTML <u> 태그 사용을 가정)
-        processed = processed.replace(/<u>(.*?)<\/u>/g, "[밑줄: $1]");
+        processed = processed.replace(
+            /<u>(.*?)<\/u>/g,
+            `</hp:t></hp:run><hp:run charPrIDRef="${this.styleIds.ul}"><hp:t>$1</hp:t></hp:run><hp:run ${defAttr}><hp:t>`,
+        );
 
-        return processed;
+        let result = `<hp:run ${defAttr}><hp:t>${processed}</hp:t></hp:run>`;
+        result = result.replace(/<hp:run[^>]*><hp:t><\/hp:t><\/hp:run>/g, ""); // 빈 태그 청소
+
+        return result;
+    }
+
+    // [신규 수정] 한글 규격에 완벽히 호환되는 표 생성기
+    private createTableXml(rows: string[][]): string {
+        const tableId = this.generateHwpId();
+        // borderFillIDRef="1" 유지 (기본 테두리 참조)
+        let xml = `<hp:tbl id="${tableId}" zOrder="0" numberingType="table" textWrap="topAndBottom" halfFont="0" borderFillIDRef="1" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">`;
+        xml += `<hp:sz width="14000" widthUnit="0" height="0" heightUnit="0"/>`;
+        xml += `<hp:pos treatAsChar="1"/>`;
+
+        // 오류의 원인이었던 <hp:margin>을 삭제하고 규격에 맞는 여백 태그 삽입
+        xml += `<hp:outMargin left="0" right="0" top="0" bottom="0"/>`;
+        xml += `<hp:inMargin left="141" right="141" top="141" bottom="141"/>`;
+
+        rows.forEach((row, rowIndex) => {
+            xml += `<hp:tr>`;
+            xml += `<hp:sz width="14000" height="0"/>`; // 행 높이 지정 필수
+
+            // 각 셀의 너비를 열 개수에 맞게 균등 배분
+            const cellWidth = Math.floor(14000 / row.length);
+
+            row.forEach((cellText, colIndex) => {
+                xml += `<hp:tc name="" header="0" hasMargin="0" protect="0" borderFillIDRef="1">`;
+                xml += `<hp:cellAddr colAddr="${colIndex}" rowAddr="${rowIndex}" />`;
+                xml += `<hp:cellSpan colSpan="1" rowSpan="1" />`;
+                xml += `<hp:cellSz width="${cellWidth}" height="0"/>`; // 셀 너비 지정 필수
+                xml += `<hp:subList>${this.createParagraphTag(this.parseInlineToRuns(cellText))}</hp:subList>`;
+                xml += `</hp:tc>`;
+            });
+            xml += `</hp:tr>`;
+        });
+        xml += `</hp:tbl>`;
+
+        return this.createParagraphTag(`<hp:run>${xml}</hp:run>`);
     }
 }
