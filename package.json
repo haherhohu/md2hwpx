@@ -9,7 +9,16 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "pricing": "Free",
+  "icon": "md2hwpx.png",
+  "publisher": "haherhohu",
+  "activationEvents": [
+    "onLanguage:markdown"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/haherhohu/md2hwpx.git"
+  },
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [

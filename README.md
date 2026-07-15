@@ -42,7 +42,7 @@ This is an extension that converts Markdown (.md) documents written in VS Code i
 
 0.0.1
 
-You can view the update history in [CHANGELOG.md](CHANGELOG.md).
+You can view the update history in CHANGELOG.md
 
 ## License
 
