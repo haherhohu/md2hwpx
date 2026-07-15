@@ -1,71 +1,49 @@
-# md2hwpx README
+# Markdown to HWPX Converter
 
-This is the README for your extension "md2hwpx". After writing up a brief description, we recommend including the following sections.
+Working with government agencies is very difficult.
 
-## Features
+This extension was created to address requests from users who primarily use Markdown, asking them to "please send the file as a Hangul file."
 
-Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.
+This is an extension that converts Markdown (.md) documents written in VS Code into Hangul (.hwpx) documents. It performs the conversion in compliance with the strict OWPML (Hangul Standard XML) specifications.
 
-For example if there is an image subfolder under your extension project workspace:
+## Key Features
 
-\!\[feature X\]\(images/feature-x.png\)
+- **hwpx Conversion:** Open a Markdown file and run the command to create a `.hwpx` file in the same folder.
 
-> Tip: Many popular extensions utilize animations. This is an excellent way to show off your extension! We recommend short, focused animations that are easy to follow.
+- **Typography**
+  - Titles (H1, H2, H3): Automatically mapped to bold fonts of 16pt, 14pt, and 12pt respectively
+  - Emphasis and Underline: Full support for `**Bold**` and `<u>Underline</u>` styles
 
-## Requirements
+- **Multilevel Lists**
+  - Automatic symbol conversion based on indentation level (Level 1: `□`, Level 2: `◦`, Level 3: `•`)
+  - Alignment provided using the **Hangul Paragraph Margin (Shift+Tab)** function
 
-If you have any requirements or dependencies, add a section describing those and how to install and configure them.
+- **Tables & Blockquotes**
+  - Converts Markdown tables to native Hangul tables (`<hp:tbl>`) (automatic distribution of borders and cell width applied)
+  - Converts quotations (`>`) into a neat 1x1 table (box) format
 
-## Extension Settings
+## Features in Plan
 
-Include if your extension adds any VS Code settings through the `contributes.configuration` extension point.
+- Increase in multilevel list levels (up to 6 levels)
 
-For example:
+- Image insertion
 
-This extension contributes the following settings:
+## How to Use
 
-* `myExtension.enable`: Enable/disable this extension.
-* `myExtension.thing`: Set to `blah` to do something.
+1. Open the Markdown (`.md`) file you want to convert.
 
-## Known Issues
+2. Press `Ctrl + Shift + P` (Mac: `Cmd + Shift + P`) to open the Command Palette.
 
-Calling out known issues can help limit users opening duplicate issues against your extension.
+3. Search for and execute the `Export to HWP` command.
+
+4. When the completion notification appears in the bottom right corner, check the generated `.hwpx` file in the folder where the Markdown file was located.
 
 ## Release Notes
 
-Users appreciate release notes as you update your extension.
+0.0.1
 
-### 1.0.0
+You can view the update history in [CHANGELOG.md](CHANGELOG.md).
 
-Initial release of ...
+## License
 
-### 1.0.1
-
-Fixed issue #.
-
-### 1.1.0
-
-Added features X, Y, and Z.
-
----
-
-## Following extension guidelines
-
-Ensure that you've read through the extensions guidelines and follow the best practices for creating your extension.
-
-* [Extension Guidelines](https://code.visualstudio.com/api/references/extension-guidelines)
-
-## Working with Markdown
-
-You can author your README using Visual Studio Code. Here are some useful editor keyboard shortcuts:
-
-* Split the editor (`Cmd+\` on macOS or `Ctrl+\` on Windows and Linux).
-* Toggle preview (`Shift+Cmd+V` on macOS or `Shift+Ctrl+V` on Windows and Linux).
-* Press `Ctrl+Space` (Windows, Linux, macOS) to see a list of Markdown snippets.
-
-## For more information
-
-* [Visual Studio Code's Markdown Support](http://code.visualstudio.com/docs/languages/markdown)
-* [Markdown Syntax Reference](https://help.github.com/articles/markdown-basics/)
-
-**Enjoy!**
+MIT License
