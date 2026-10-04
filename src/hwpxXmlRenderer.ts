@@ -1,4 +1,4 @@
-type Token = any;
+import { MarkdownToken } from "./types";
 
 export class HwpxXmlRenderer {
     private styleIds = { bold: 0, ul: 0, h1: 0, h2: 0, h3: 0, h4: 0, h5: 0, h6: 0 };
@@ -61,7 +61,7 @@ export class HwpxXmlRenderer {
         return updatedHeader.replace(new RegExp(`</${ns}:charProperties>`), `${customStyles}</${ns}:charProperties>`);
     }
 
-    public renderTokens(tokens: Token[]): string {
+    public renderTokens(tokens: MarkdownToken[]): string {
         return tokens.map((token) => this.convertTokenToXml(token)).join("");
     }
 
@@ -113,7 +113,7 @@ export class HwpxXmlRenderer {
         const setMargin = (xmlStr: string, leftMargin: number) => {
             return xmlStr.replace(
                 new RegExp(`<hh:margin([^>]*)>([\\s\\S]*?)<\\/hh:margin>`),
-                `<hh:margin><hc:intent value="${-leftMargin}" unit="HWPUNIT"/><hc:left value="0" unit="HWPUNIT"/><hc:right value="0" unit="HWPUNIT"/><hc:prev value="0" unit="HWPUNIT"/><hc:next value="0" unit="HWPUNIT"/></hh:margin>`,
+                `<hh:margin><hc:indent value="${-leftMargin}" unit="HWPUNIT"/><hc:left value="0" unit="HWPUNIT"/><hc:right value="0" unit="HWPUNIT"/><hc:prev value="0" unit="HWPUNIT"/><hc:next value="0" unit="HWPUNIT"/></hh:margin>`,
             );
         };
 
@@ -126,7 +126,7 @@ export class HwpxXmlRenderer {
         return updatedHeader.replace(new RegExp(`</hh:paraProperties>`), `${customParaPrs}</hh:paraProperties>`);
     }
 
-    private convertTokenToXml(token: Token, listLevel = 0): string {
+    private convertTokenToXml(token: MarkdownToken, listLevel = 0): string {
         switch (token.type) {
             case "heading": {
                 const headingMap: Record<number, number> = {
@@ -143,7 +143,7 @@ export class HwpxXmlRenderer {
             case "paragraph":
                 return this.createParagraphTag(this.parseInlineToRuns(token.text));
             case "list":
-                return (token.items ?? []).map((item: Token) => this.convertTokenToXml(item, listLevel)).join("");
+                return (token.items ?? []).map((item: MarkdownToken) => this.convertTokenToXml(item, listLevel)).join("");
             case "list_item": {
                 const bullet = listLevel === 0 ? "□ " : listLevel === 1 ? "  ◦ " : "    • ";
                 const paraPrId = listLevel === 0 ? this.paraPrIds.level1 : listLevel === 1 ? this.paraPrIds.level2 : this.paraPrIds.level3;
@@ -219,13 +219,13 @@ export class HwpxXmlRenderer {
         return "";
     }
 
-    private extractBlockquoteText(token: Token): string {
+    private extractBlockquoteText(token: MarkdownToken): string {
         if (typeof token.text === "string" && token.text.length > 0) {
             return token.text;
         }
         if (Array.isArray(token.tokens)) {
             return token.tokens
-                .map((child: Token) => {
+                .map((child: MarkdownToken) => {
                     if (typeof child.text === "string") {
                         return child.text;
                     }
@@ -254,7 +254,7 @@ export class HwpxXmlRenderer {
         );
 
         processed = processed.replace(
-            /<u>(.*?)<\/u>/g,
+            /&lt;u&gt;(.*?)&lt;\/u&gt;/g,
             `</hp:t></hp:run><hp:run charPrIDRef="${this.styleIds.ul}"><hp:t>$1</hp:t></hp:run><hp:run ${defAttr}><hp:t>`,
         );
 
@@ -267,7 +267,8 @@ export class HwpxXmlRenderer {
         const safeRows = rows.length > 0 ? rows : [[""]];
         const tableId = this.generateHwpId();
         const rowCount = safeRows.length;
-        const colCount = safeRows[0].length > 0 ? safeRows[0].length : 1;
+        const columnMaxLengths = this.getColumnMaxLengths(safeRows);
+        const colCount = columnMaxLengths.length;
 
         let xml = `<hp:tbl id="${tableId}" zOrder="0" numberingType="table" textWrap="topAndBottom" halfFont="0" borderFillIDRef="3" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0" rowCnt="${rowCount}" colCnt="${colCount}" cellSpacing="0">`;
         xml += `<hp:sz width="42000" widthRelTo="ABSOLUTE" height="0" heightRelTo="ABSOLUTE" protect="0"/>`;
@@ -275,7 +276,7 @@ export class HwpxXmlRenderer {
         xml += `<hp:outMargin left="0" right="0" top="0" bottom="0"/>`;
         xml += `<hp:inMargin left="280" right="280" top="280" bottom="280"/>`;
 
-        const widths = this.calculateColumnWidths(safeRows[0].map((cell) => cell.length), 42000);
+        const widths = this.calculateColumnWidths(columnMaxLengths, 42000);
 
         safeRows.forEach((row, rowIndex) => {
             xml += `<hp:tr>`;
@@ -308,5 +309,23 @@ export class HwpxXmlRenderer {
         const currentSum = widths.reduce((a, b) => a + b, 0);
         widths[widths.length - 1] += totalAvailableWidth - currentSum;
         return widths;
+    }
+
+    private getColumnMaxLengths(rows: string[][]): number[] {
+        if (rows.length === 0) {
+            return [1];
+        }
+
+        const maxColumnCount = rows.reduce((max, row) => Math.max(max, row.length), 0);
+        const maxLengths = new Array<number>(Math.max(maxColumnCount, 1)).fill(1);
+
+        for (const row of rows) {
+            for (let index = 0; index < maxLengths.length; index++) {
+                const currentLength = (row[index] ?? "").length;
+                maxLengths[index] = Math.max(maxLengths[index], currentLength);
+            }
+        }
+
+        return maxLengths;
     }
 }

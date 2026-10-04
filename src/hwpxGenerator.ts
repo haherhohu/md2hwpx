@@ -5,23 +5,23 @@ import { MarkdownPipeline } from "./markdownPipeline";
 
 export class HwpxGenerator {
     private readonly markdownPipeline = new MarkdownPipeline();
-    private readonly renderer = new HwpxXmlRenderer();
 
     public async generate(mdContent: string, templatePath: string, outputPath: string) {
         try {
+            const renderer = new HwpxXmlRenderer();
             const templateBuffer = fs.readFileSync(templatePath);
             const zip = await JSZip.loadAsync(templateBuffer);
 
             const headerXmlFile = zip.file("Contents/header.xml");
             if (headerXmlFile) {
                 const headerXml = await headerXmlFile.async("string");
-                const updatedHeaderXml = this.renderer.prepareHeaderXml(headerXml);
+                const updatedHeaderXml = renderer.prepareHeaderXml(headerXml);
                 zip.file("Contents/header.xml", updatedHeaderXml);
             }
 
             const parsedTokens = this.markdownPipeline.parseMarkdown(mdContent);
             const normalizedTokens = this.markdownPipeline.normalizeTokens(parsedTokens);
-            const hwpxXmlContent = this.renderer.renderTokens(normalizedTokens);
+            const hwpxXmlContent = renderer.renderTokens(normalizedTokens);
 
             const sectionXmlFile = zip.file("Contents/section0.xml");
             if (!sectionXmlFile) {

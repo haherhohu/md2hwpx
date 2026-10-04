@@ -37,7 +37,7 @@ suite("HWPX Generator Regression Suite", () => {
         assert.ok(sectionXml.includes('<hp:pos treatAsChar="0"/>'));
     });
 
-    test("keeps plain blockquote rendering", async () => {
+    test("renders plain blockquote as quote-box table", async () => {
         const sectionXml = await generateSectionXml(`> just quote`);
         assert.ok(sectionXml.includes("just quote"));
         assert.ok(sectionXml.includes("<hp:tbl"));
