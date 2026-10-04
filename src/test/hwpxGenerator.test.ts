@@ -80,4 +80,27 @@ suite("HWPX Generator Regression Suite", () => {
         const sectionXml = await generateSectionXml(`![alt text](./assets/sample.png)`);
         assert.ok(sectionXml.includes("[Image] alt text (./assets/sample.png)"));
     });
+
+    test("renders horizontal rule as page break paragraph", async () => {
+        const sectionXml = await generateSectionXml(`before\n\n---\n\nafter`);
+        assert.ok(sectionXml.includes("before"));
+        assert.ok(sectionXml.includes("after"));
+        assert.ok(sectionXml.includes('pageBreak="1"'));
+    });
+
+    test("renders markdown links as numbered markers and appends endnotes", async () => {
+        const sectionXml = await generateSectionXml(`문장 [A](https://a.example) 과 [B](https://b.example)`);
+        assert.ok(sectionXml.includes("A[1]"));
+        assert.ok(sectionXml.includes("B[2]"));
+        assert.ok(sectionXml.includes("미주"));
+        assert.ok(sectionXml.includes("[1] https://a.example"));
+        assert.ok(sectionXml.includes("[2] https://b.example"));
+    });
+
+    test("reuses the same endnote index for duplicate link urls", async () => {
+        const sectionXml = await generateSectionXml(`[A](https://a.example) and [A2](https://a.example)`);
+        assert.ok(sectionXml.includes("A[1]"));
+        assert.ok(sectionXml.includes("A2[1]"));
+        assert.ok(!sectionXml.includes("[2] https://a.example"));
+    });
 });

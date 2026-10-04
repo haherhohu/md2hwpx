@@ -27,9 +27,14 @@ This is an extension that converts Markdown (.md) documents written in VS Code i
 - **Images**
   - Markdown image tokens are rendered as image placeholders with source path text
 
+- **Page Flow & Endnotes**
+  - Horizontal rule (`---`) is converted to a page-break paragraph
+  - Markdown links (`[text](url)`) are converted to numbered markers in body text and collected as endnotes at the end of the document
+
 ## Features in Plan
 
 - Mermaid diagram to image conversion and insertion
+- Advanced TOC/page-number integration (use existing TOC only; add better page-number/header-jump linkage)
 
 ## How to Use
 

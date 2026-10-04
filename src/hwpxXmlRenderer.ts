@@ -4,6 +4,7 @@ export class HwpxXmlRenderer {
     private styleIds = { bold: 0, ul: 0, h1: 0, h2: 0, h3: 0, h4: 0, h5: 0, h6: 0 };
     private paraPrIds = { level1: 0, level2: 0, level3: 0, level4: 0, level5: 0, level6: 0 };
     private currentElementId = 1000000000;
+    private linkEndnotes: Array<{ index: number; href: string }> = [];
 
     private generateHwpId(): number {
         return this.currentElementId++;
@@ -62,12 +63,18 @@ export class HwpxXmlRenderer {
     }
 
     public renderTokens(tokens: MarkdownToken[]): string {
+        this.linkEndnotes = [];
+        const content = this.renderTokensInternal(tokens);
+        return content + this.renderEndnotesSection();
+    }
+
+    private renderTokensInternal(tokens: MarkdownToken[]): string {
         return tokens.map((token) => this.convertTokenToXml(token)).join("");
     }
 
-    private createParagraphTag(runXml: string, paraPrId = 0): string {
+    private createParagraphTag(runXml: string, paraPrId = 0, pageBreak = 0): string {
         const id = this.generateHwpId();
-        return `<hp:p id="${id}" paraPrIDRef="${paraPrId}" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">${runXml}</hp:p>`;
+        return `<hp:p id="${id}" paraPrIDRef="${paraPrId}" styleIDRef="0" pageBreak="${pageBreak}" columnBreak="0" merged="0">${runXml}</hp:p>`;
     }
 
     private injectBorderFillToHeader(headerXmlString: string): string {
@@ -149,10 +156,17 @@ export class HwpxXmlRenderer {
                 };
                 const depth = typeof token.depth === "number" ? token.depth : 6;
                 const hId = headingMap[depth] ?? this.styleIds.h6;
-                return this.createParagraphTag(this.parseInlineToRuns((hId === this.styleIds.h1 ? "" : "\n") + token.text + "\n", hId));
+                const headingTokens = this.asTokenArray(token.tokens);
+                const headingRuns =
+                    headingTokens.length > 0 ? this.renderInlineTokens(headingTokens, hId) : this.parseInlineToRuns(token.text ?? "", hId);
+                const prefixRun = hId === this.styleIds.h1 ? "" : this.parseInlineToRuns("\n", hId);
+                const suffixRun = this.parseInlineToRuns("\n", hId);
+                return this.createParagraphTag(`${prefixRun}${headingRuns}${suffixRun}`);
             }
             case "paragraph":
                 return this.renderParagraphToken(token);
+            case "hr":
+                return this.createParagraphTag("<hp:run><hp:t></hp:t></hp:run>", 0, 1);
             case "list":
                 return this.asTokenArray(token.items)
                     .map((item: MarkdownToken) => this.convertTokenToXml(item, listLevel))
@@ -181,7 +195,12 @@ export class HwpxXmlRenderer {
                 for (const child of childTokens) {
                     if (child.type === "text" || child.type === "paragraph") {
                         const prefix = isFirstText ? bullet : "    ";
-                        xml += this.createParagraphTag(this.parseInlineToRuns(`${prefix}${child.text ?? ""}`), paraPrId);
+                        const childInlineTokens = this.asTokenArray(child.tokens);
+                        const childRuns =
+                            childInlineTokens.length > 0
+                                ? this.renderInlineTokens(childInlineTokens)
+                                : this.parseInlineToRuns(child.text ?? "");
+                        xml += this.createParagraphTag(`${this.parseInlineToRuns(prefix)}${childRuns}`, paraPrId);
                         isFirstText = false;
                     } else if (child.type === "list") {
                         xml += this.convertTokenToXml(child, listLevel + 1);
@@ -190,7 +209,7 @@ export class HwpxXmlRenderer {
                 return xml;
             }
             case "blockquote":
-                return this.renderTokens(this.asTokenArray(token.tokens));
+                return this.renderTokensInternal(this.asTokenArray(token.tokens));
             case "table": {
                 const rows: string[][] = [];
                 const headerCells = Array.isArray(token.header) ? token.header : [];
@@ -214,21 +233,10 @@ export class HwpxXmlRenderer {
 
     private renderParagraphToken(token: MarkdownToken): string {
         const inlineTokens = this.asTokenArray(token.tokens);
-        if (!inlineTokens.some((inlineToken: MarkdownToken) => inlineToken.type === "image")) {
+        if (inlineTokens.length === 0) {
             return this.createParagraphTag(this.parseInlineToRuns(token.text ?? ""));
         }
-
-        let paragraphXml = "";
-        for (const inlineToken of inlineTokens) {
-            if (inlineToken.type === "image") {
-                paragraphXml += this.createImageFallbackRun(inlineToken);
-                continue;
-            }
-
-            const text = typeof inlineToken.text === "string" ? inlineToken.text : typeof inlineToken.raw === "string" ? inlineToken.raw : "";
-            paragraphXml += this.parseInlineToRuns(text);
-        }
-        return this.createParagraphTag(paragraphXml);
+        return this.createParagraphTag(this.renderInlineTokens(inlineTokens));
     }
 
     private extractCellText(cell: unknown): string {
@@ -265,11 +273,97 @@ export class HwpxXmlRenderer {
         return "";
     }
 
-    private createImageFallbackRun(token: MarkdownToken): string {
+    private createImageFallbackRun(token: MarkdownToken, defaultStyleId?: number): string {
         const altText = typeof token.text === "string" && token.text.length > 0 ? token.text : "image";
         const source = typeof token.href === "string" ? token.href : "";
         const imageText = source ? `[Image] ${altText} (${source})` : `[Image] ${altText}`;
-        return this.parseInlineToRuns(imageText);
+        return this.parseInlineToRuns(imageText, defaultStyleId);
+    }
+
+    private renderInlineTokens(tokens: MarkdownToken[], defaultStyleId?: number): string {
+        let xml = "";
+        for (const token of tokens) {
+            if (token.type === "image") {
+                xml += this.createImageFallbackRun(token, defaultStyleId);
+                continue;
+            }
+
+            if (token.type === "link") {
+                const label = this.extractInlineText(token);
+                const href = typeof token.href === "string" ? token.href : "";
+                const linkIndex = this.registerLinkEndnote(href);
+                xml += this.parseInlineToRuns(linkIndex > 0 ? `${label}[${linkIndex}]` : label, defaultStyleId);
+                continue;
+            }
+
+            if (token.type === "strong") {
+                const strongTokens = this.asTokenArray(token.tokens);
+                if (strongTokens.length > 0) {
+                    xml += this.renderInlineTokens(strongTokens, this.styleIds.bold);
+                } else {
+                    const strongText = typeof token.text === "string" ? token.text : "";
+                    xml += this.parseInlineToRuns(strongText, this.styleIds.bold);
+                }
+                continue;
+            }
+
+            if (token.type === "br") {
+                xml += this.parseInlineToRuns("\n", defaultStyleId);
+                continue;
+            }
+
+            if (Array.isArray(token.tokens) && token.tokens.length > 0) {
+                xml += this.renderInlineTokens(token.tokens as MarkdownToken[], defaultStyleId);
+                continue;
+            }
+
+            const text = typeof token.text === "string" ? token.text : typeof token.raw === "string" ? token.raw : "";
+            xml += this.parseInlineToRuns(text, defaultStyleId);
+        }
+        return xml;
+    }
+
+    private extractInlineText(token: MarkdownToken): string {
+        if (typeof token.text === "string" && token.text.length > 0) {
+            return token.text;
+        }
+        if (Array.isArray(token.tokens) && token.tokens.length > 0) {
+            return (token.tokens as MarkdownToken[])
+                .map((child) => this.extractInlineText(child))
+                .join("")
+                .trim();
+        }
+        if (typeof token.raw === "string") {
+            return token.raw;
+        }
+        return "";
+    }
+
+    private registerLinkEndnote(href: string): number {
+        if (!href) {
+            return 0;
+        }
+
+        const existing = this.linkEndnotes.find((endnote) => endnote.href === href);
+        if (existing) {
+            return existing.index;
+        }
+
+        const index = this.linkEndnotes.length + 1;
+        this.linkEndnotes.push({ index, href });
+        return index;
+    }
+
+    private renderEndnotesSection(): string {
+        if (this.linkEndnotes.length === 0) {
+            return "";
+        }
+
+        let xml = this.createParagraphTag(this.parseInlineToRuns("\n미주\n", this.styleIds.h3));
+        for (const endnote of this.linkEndnotes) {
+            xml += this.createParagraphTag(this.parseInlineToRuns(`[${endnote.index}] ${endnote.href}`));
+        }
+        return xml;
     }
 
     private parseInlineToRuns(text: string, defaultStyleId?: number): string {
