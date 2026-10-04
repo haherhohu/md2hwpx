@@ -15,18 +15,21 @@ This is an extension that converts Markdown (.md) documents written in VS Code i
   - Emphasis and Underline: Full support for `**Bold**` and `<u>Underline</u>` styles
 
 - **Multilevel Lists**
-  - Automatic symbol conversion based on indentation level (Level 1: `□`, Level 2: `◦`, Level 3: `•`)
+  - Automatic symbol conversion based on indentation level (Level 1~6)
   - Alignment provided using the **Hangul Paragraph Margin (Shift+Tab)** function
 
 - **Tables & Blockquotes**
   - Converts Markdown tables to native Hangul tables (`<hp:tbl>`) (automatic distribution of borders and cell width applied)
-  - Converts quotations (`>`) into a neat 1x1 table (box) format
+  - If tables appear inside quotations (`>`), the table is lifted and converted as a real table
+  - HTML `<table>` blocks inside quotations are also detected and converted into real tables
+  - Plain quotation content remains as normal quoted text flow
+
+- **Images**
+  - Markdown image tokens are rendered as image placeholders with source path text
 
 ## Features in Plan
 
-- Increase in multilevel list levels (up to 6 levels)
-
-- Image insertion
+- Mermaid diagram to image conversion and insertion
 
 ## How to Use
 

@@ -2,7 +2,7 @@ import { MarkdownToken } from "./types";
 
 export class HwpxXmlRenderer {
     private styleIds = { bold: 0, ul: 0, h1: 0, h2: 0, h3: 0, h4: 0, h5: 0, h6: 0 };
-    private paraPrIds = { level1: 0, level2: 0, level3: 0 };
+    private paraPrIds = { level1: 0, level2: 0, level3: 0, level4: 0, level5: 0, level6: 0 };
     private currentElementId = 1000000000;
 
     private generateHwpId(): number {
@@ -95,12 +95,19 @@ export class HwpxXmlRenderer {
             const itemCntMatch = attrs.match(/itemCnt="(\d+)"/);
             if (itemCntMatch) {
                 currentParaCnt = parseInt(itemCntMatch[1], 10);
-                return `<hh:paraProperties ` + attrs.replace(/itemCnt="\d+"/, `itemCnt="${currentParaCnt + 3}"`) + `>`;
+                return `<hh:paraProperties ` + attrs.replace(/itemCnt="\d+"/, `itemCnt="${currentParaCnt + 6}"`) + `>`;
             }
             return match;
         });
 
-        this.paraPrIds = { level1: currentParaCnt, level2: currentParaCnt + 1, level3: currentParaCnt + 2 };
+        this.paraPrIds = {
+            level1: currentParaCnt,
+            level2: currentParaCnt + 1,
+            level3: currentParaCnt + 2,
+            level4: currentParaCnt + 3,
+            level5: currentParaCnt + 4,
+            level6: currentParaCnt + 5,
+        };
 
         const baseParaMatch = updatedHeader.match(new RegExp(`<hh:paraPr\\s+id="0"([^>]*)>([\\s\\S]*?)<\\/hh:paraPr>`));
         if (!baseParaMatch) {
@@ -121,6 +128,9 @@ export class HwpxXmlRenderer {
                     <hh:paraPr id="${this.paraPrIds.level1}" ${attrs}>${setMargin(inner, 1500)}</hh:paraPr>
                     <hh:paraPr id="${this.paraPrIds.level2}" ${attrs}>${setMargin(inner, 2600)}</hh:paraPr>
                     <hh:paraPr id="${this.paraPrIds.level3}" ${attrs}>${setMargin(inner, 3200)}</hh:paraPr>
+                    <hh:paraPr id="${this.paraPrIds.level4}" ${attrs}>${setMargin(inner, 3800)}</hh:paraPr>
+                    <hh:paraPr id="${this.paraPrIds.level5}" ${attrs}>${setMargin(inner, 4400)}</hh:paraPr>
+                    <hh:paraPr id="${this.paraPrIds.level6}" ${attrs}>${setMargin(inner, 5000)}</hh:paraPr>
                     `;
 
         return updatedHeader.replace(new RegExp(`</hh:paraProperties>`), `${customParaPrs}</hh:paraProperties>`);
@@ -137,24 +147,38 @@ export class HwpxXmlRenderer {
                     5: this.styleIds.h5,
                     6: this.styleIds.h6,
                 };
-                const hId = headingMap[token.depth] ?? this.styleIds.h6;
+                const depth = typeof token.depth === "number" ? token.depth : 6;
+                const hId = headingMap[depth] ?? this.styleIds.h6;
                 return this.createParagraphTag(this.parseInlineToRuns((hId === this.styleIds.h1 ? "" : "\n") + token.text + "\n", hId));
             }
             case "paragraph":
-                return this.createParagraphTag(this.parseInlineToRuns(token.text));
+                return this.renderParagraphToken(token);
             case "list":
-                return (token.items ?? []).map((item: MarkdownToken) => this.convertTokenToXml(item, listLevel)).join("");
+                return this.asTokenArray(token.items)
+                    .map((item: MarkdownToken) => this.convertTokenToXml(item, listLevel))
+                    .join("");
             case "list_item": {
-                const bullet = listLevel === 0 ? "□ " : listLevel === 1 ? "  ◦ " : "    • ";
-                const paraPrId = listLevel === 0 ? this.paraPrIds.level1 : listLevel === 1 ? this.paraPrIds.level2 : this.paraPrIds.level3;
+                const bulletByLevel = ["□ ", "  ◦ ", "    • ", "      ▪ ", "        ▫ ", "          ‣ "];
+                const paraPrByLevel = [
+                    this.paraPrIds.level1,
+                    this.paraPrIds.level2,
+                    this.paraPrIds.level3,
+                    this.paraPrIds.level4,
+                    this.paraPrIds.level5,
+                    this.paraPrIds.level6,
+                ];
+                const normalizedLevel = Math.max(0, Math.min(listLevel, bulletByLevel.length - 1));
+                const bullet = bulletByLevel[normalizedLevel];
+                const paraPrId = paraPrByLevel[normalizedLevel] ?? this.paraPrIds.level6;
 
-                if (!(token.tokens && token.tokens.length > 0)) {
+                const childTokens = this.asTokenArray(token.tokens);
+                if (childTokens.length === 0) {
                     return this.createParagraphTag(this.parseInlineToRuns(`${bullet}${token.text ?? ""}`), paraPrId);
                 }
 
                 let xml = "";
                 let isFirstText = true;
-                for (const child of token.tokens) {
+                for (const child of childTokens) {
                     if (child.type === "text" || child.type === "paragraph") {
                         const prefix = isFirstText ? bullet : "    ";
                         xml += this.createParagraphTag(this.parseInlineToRuns(`${prefix}${child.text ?? ""}`), paraPrId);
@@ -166,12 +190,15 @@ export class HwpxXmlRenderer {
                 return xml;
             }
             case "blockquote":
-                return this.createTableXml([[this.extractBlockquoteText(token)]]);
+                return this.renderTokens(this.asTokenArray(token.tokens));
             case "table": {
                 const rows: string[][] = [];
-                rows.push((token.header ?? []).map((cell: unknown) => this.extractCellText(cell)));
-                (token.rows ?? []).forEach((row: unknown[]) => {
-                    rows.push((row ?? []).map((cell: unknown) => this.extractCellText(cell)));
+                const headerCells = Array.isArray(token.header) ? token.header : [];
+                const bodyRows = Array.isArray(token.rows) ? token.rows : [];
+                rows.push(headerCells.map((cell: unknown) => this.extractCellText(cell)));
+                bodyRows.forEach((row: unknown) => {
+                    const rowCells = Array.isArray(row) ? row : [];
+                    rows.push(rowCells.map((cell: unknown) => this.extractCellText(cell)));
                 });
                 return this.createTableXml(rows);
             }
@@ -183,6 +210,25 @@ export class HwpxXmlRenderer {
                 }
                 return "";
         }
+    }
+
+    private renderParagraphToken(token: MarkdownToken): string {
+        const inlineTokens = this.asTokenArray(token.tokens);
+        if (!inlineTokens.some((inlineToken: MarkdownToken) => inlineToken.type === "image")) {
+            return this.createParagraphTag(this.parseInlineToRuns(token.text ?? ""));
+        }
+
+        let paragraphXml = "";
+        for (const inlineToken of inlineTokens) {
+            if (inlineToken.type === "image") {
+                paragraphXml += this.createImageFallbackRun(inlineToken);
+                continue;
+            }
+
+            const text = typeof inlineToken.text === "string" ? inlineToken.text : typeof inlineToken.raw === "string" ? inlineToken.raw : "";
+            paragraphXml += this.parseInlineToRuns(text);
+        }
+        return this.createParagraphTag(paragraphXml);
     }
 
     private extractCellText(cell: unknown): string {
@@ -219,25 +265,11 @@ export class HwpxXmlRenderer {
         return "";
     }
 
-    private extractBlockquoteText(token: MarkdownToken): string {
-        if (typeof token.text === "string" && token.text.length > 0) {
-            return token.text;
-        }
-        if (Array.isArray(token.tokens)) {
-            return token.tokens
-                .map((child: MarkdownToken) => {
-                    if (typeof child.text === "string") {
-                        return child.text;
-                    }
-                    if (typeof child.raw === "string") {
-                        return child.raw;
-                    }
-                    return "";
-                })
-                .join("\n")
-                .trim();
-        }
-        return "";
+    private createImageFallbackRun(token: MarkdownToken): string {
+        const altText = typeof token.text === "string" && token.text.length > 0 ? token.text : "image";
+        const source = typeof token.href === "string" ? token.href : "";
+        const imageText = source ? `[Image] ${altText} (${source})` : `[Image] ${altText}`;
+        return this.parseInlineToRuns(imageText);
     }
 
     private parseInlineToRuns(text: string, defaultStyleId?: number): string {
@@ -281,7 +313,8 @@ export class HwpxXmlRenderer {
         safeRows.forEach((row, rowIndex) => {
             xml += `<hp:tr>`;
 
-            row.forEach((cellText, colIndex) => {
+            for (let colIndex = 0; colIndex < colCount; colIndex++) {
+                const cellText = row[colIndex] ?? "";
                 const cellWidth = widths[colIndex] ?? widths[widths.length - 1];
                 xml += `<hp:tc name="" header="0" hasMargin="1" protect="0" borderFillIDRef="3">`;
                 xml += `<hp:subList>${this.createParagraphTag(this.parseInlineToRuns(cellText))}</hp:subList>`;
@@ -291,7 +324,7 @@ export class HwpxXmlRenderer {
                 xml += `<hp:cellMargin left="280" right="280" top="280" bottom="280"/>`;
                 xml += `<hp:tcPr leftBorder="1" rightBorder="1" topBorder="1" bottomBorder="1"/>`;
                 xml += `</hp:tc>`;
-            });
+            }
 
             xml += `</hp:tr>`;
         });
@@ -327,5 +360,9 @@ export class HwpxXmlRenderer {
         }
 
         return maxLengths;
+    }
+
+    private asTokenArray(value: unknown): MarkdownToken[] {
+        return Array.isArray(value) ? (value as MarkdownToken[]) : [];
     }
 }

@@ -32,15 +32,24 @@ suite("HWPX Generator Regression Suite", () => {
         assert.ok(!normalized.some((token) => token.type === "blockquote"));
     });
 
+    test("normalizes blockquote-wrapped html table into plain table token", () => {
+        const pipeline = new MarkdownPipeline();
+        const tokens = pipeline.parseMarkdown(`> <table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table>`);
+        const normalized = pipeline.normalizeTokens(tokens);
+
+        assert.ok(normalized.some((token) => token.type === "table"));
+        assert.ok(!normalized.some((token) => token.type === "blockquote"));
+    });
+
     test("renders table with non treat-as-character placement", async () => {
         const sectionXml = await generateSectionXml(`| A | B |\n| - | - |\n| 1 | 2 |`);
         assert.ok(sectionXml.includes('<hp:pos treatAsChar="0"/>'));
     });
 
-    test("renders plain blockquote as quote-box table", async () => {
+    test("renders plain blockquote as normal text content", async () => {
         const sectionXml = await generateSectionXml(`> just quote`);
         assert.ok(sectionXml.includes("just quote"));
-        assert.ok(sectionXml.includes("<hp:tbl"));
+        assert.ok(!sectionXml.includes("<hp:tbl"));
     });
 
     test("renders plain tables and mixed list+table without dropping tables", async () => {
@@ -55,5 +64,20 @@ suite("HWPX Generator Regression Suite", () => {
         const sectionXml = await generateSectionXml(`| C1 | C2 |\n| - | - |\n${rows}`);
         const tableCount = (sectionXml.match(/<hp:tbl/g) || []).length;
         assert.ok(tableCount >= 1);
+    });
+
+    test("renders six-level nested list content", async () => {
+        const sectionXml = await generateSectionXml(
+            `- l1\n  - l2\n    - l3\n      - l4\n        - l5\n          - l6`,
+        );
+
+        assert.ok(sectionXml.includes("l1"));
+        assert.ok(sectionXml.includes("l6"));
+        assert.ok(sectionXml.includes("▫") || sectionXml.includes("‣"));
+    });
+
+    test("renders markdown image token as image placeholder paragraph content", async () => {
+        const sectionXml = await generateSectionXml(`![alt text](./assets/sample.png)`);
+        assert.ok(sectionXml.includes("[Image] alt text (./assets/sample.png)"));
     });
 });
