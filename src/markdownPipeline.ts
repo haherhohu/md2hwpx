@@ -1,5 +1,6 @@
 import { marked } from "marked";
 import { MarkdownToken } from "./types";
+import { asTokenArray } from "./tokenUtils";
 
 export class MarkdownPipeline {
     public parseMarkdown(mdContent: string): MarkdownToken[] {
@@ -17,7 +18,11 @@ export class MarkdownPipeline {
 
         if (token.type === "blockquote") {
             const normalizedChildren = this.normalizeTokens(token.tokens ?? []).flatMap((child) => this.convertHtmlTableToken(child));
-            if (normalizedChildren.some((child) => child.type === "table")) {
+            const quoteText = typeof token.text === "string" ? token.text.trimStart() : "";
+            const startsWithMarkdownTable = quoteText.startsWith("|");
+            const containsHtmlTable = asTokenArray(token.tokens).some((child) => this.isHtmlTableToken(child));
+
+            if ((startsWithMarkdownTable || containsHtmlTable) && normalizedChildren.some((child) => child.type === "table")) {
                 const result: MarkdownToken[] = [];
                 let quoteBuffer: MarkdownToken[] = [];
 
@@ -43,14 +48,23 @@ export class MarkdownPipeline {
         }
 
         if (token.type === "list") {
-            const items = this.asTokenArray(token.items).map((item) => {
-                const normalizedItemChildren = this.asTokenArray(item.tokens).flatMap((child) => this.normalizeToken(child));
+            const items = asTokenArray(token.items).map((item) => {
+                const normalizedItemChildren = asTokenArray(item.tokens).flatMap((child) => this.normalizeToken(child));
                 return { ...item, tokens: normalizedItemChildren };
             });
             return [{ ...token, items }];
         }
 
         return [token];
+    }
+
+    private isHtmlTableToken(token: MarkdownToken): boolean {
+        if (token?.type !== "html") {
+            return false;
+        }
+
+        const htmlContent = typeof token.text === "string" ? token.text : typeof token.raw === "string" ? token.raw : "";
+        return /<table[\s\S]*?>/i.test(htmlContent);
     }
 
     private convertHtmlTableToken(token: MarkdownToken): MarkdownToken[] {
@@ -130,7 +144,4 @@ export class MarkdownPipeline {
         return result;
     }
 
-    private asTokenArray(value: unknown): MarkdownToken[] {
-        return Array.isArray(value) ? (value as MarkdownToken[]) : [];
-    }
 }

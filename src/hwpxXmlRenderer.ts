@@ -1,4 +1,5 @@
 import { MarkdownToken } from "./types";
+import { asTokenArray } from "./tokenUtils";
 
 export class HwpxXmlRenderer {
     private styleIds = { bold: 0, ul: 0, h1: 0, h2: 0, h3: 0, h4: 0, h5: 0, h6: 0 };
@@ -156,7 +157,7 @@ export class HwpxXmlRenderer {
                 };
                 const depth = typeof token.depth === "number" ? token.depth : 6;
                 const hId = headingMap[depth] ?? this.styleIds.h6;
-                const headingTokens = this.asTokenArray(token.tokens);
+                const headingTokens = asTokenArray(token.tokens);
                 const headingRuns =
                     headingTokens.length > 0 ? this.renderInlineTokens(headingTokens, hId) : this.parseInlineToRuns(token.text ?? "", hId);
                 const prefixRun = hId === this.styleIds.h1 ? "" : this.parseInlineToRuns("\n", hId);
@@ -168,7 +169,7 @@ export class HwpxXmlRenderer {
             case "hr":
                 return this.createParagraphTag("<hp:run><hp:t></hp:t></hp:run>", 0, 1);
             case "list":
-                return this.asTokenArray(token.items)
+                return asTokenArray(token.items)
                     .map((item: MarkdownToken) => this.convertTokenToXml(item, listLevel))
                     .join("");
             case "list_item": {
@@ -185,7 +186,7 @@ export class HwpxXmlRenderer {
                 const bullet = bulletByLevel[normalizedLevel];
                 const paraPrId = paraPrByLevel[normalizedLevel] ?? this.paraPrIds.level6;
 
-                const childTokens = this.asTokenArray(token.tokens);
+                const childTokens = asTokenArray(token.tokens);
                 if (childTokens.length === 0) {
                     return this.createParagraphTag(this.parseInlineToRuns(`${bullet}${token.text ?? ""}`), paraPrId);
                 }
@@ -195,7 +196,7 @@ export class HwpxXmlRenderer {
                 for (const child of childTokens) {
                     if (child.type === "text" || child.type === "paragraph") {
                         const prefix = isFirstText ? bullet : "    ";
-                        const childInlineTokens = this.asTokenArray(child.tokens);
+                        const childInlineTokens = asTokenArray(child.tokens);
                         const childRuns =
                             childInlineTokens.length > 0
                                 ? this.renderInlineTokens(childInlineTokens)
@@ -209,7 +210,7 @@ export class HwpxXmlRenderer {
                 return xml;
             }
             case "blockquote":
-                return this.renderTokensInternal(this.asTokenArray(token.tokens));
+                return this.createTableXml([[this.extractBlockquoteText(token)]]);
             case "table": {
                 const rows: string[][] = [];
                 const headerCells = Array.isArray(token.header) ? token.header : [];
@@ -232,7 +233,7 @@ export class HwpxXmlRenderer {
     }
 
     private renderParagraphToken(token: MarkdownToken): string {
-        const inlineTokens = this.asTokenArray(token.tokens);
+        const inlineTokens = asTokenArray(token.tokens);
         if (inlineTokens.length === 0) {
             return this.createParagraphTag(this.parseInlineToRuns(token.text ?? ""));
         }
@@ -244,21 +245,21 @@ export class HwpxXmlRenderer {
             return "";
         }
         if (typeof cell === "string") {
-            return cell;
+            return this.normalizeTableCellText(cell);
         }
         if (typeof cell === "number" || typeof cell === "boolean") {
-            return String(cell);
+            return this.normalizeTableCellText(String(cell));
         }
 
         const value = cell as { text?: unknown; raw?: unknown; tokens?: Array<{ text?: unknown; raw?: unknown }> };
         if (typeof value.text === "string") {
-            return value.text;
+            return this.normalizeTableCellText(value.text);
         }
         if (typeof value.raw === "string") {
-            return value.raw;
+            return this.normalizeTableCellText(value.raw);
         }
         if (Array.isArray(value.tokens)) {
-            return value.tokens
+            const tokenText = value.tokens
                 .map((token) => {
                     if (typeof token.text === "string") {
                         return token.text;
@@ -269,6 +270,28 @@ export class HwpxXmlRenderer {
                     return "";
                 })
                 .join("");
+            return this.normalizeTableCellText(tokenText);
+        }
+        return "";
+    }
+
+    private extractBlockquoteText(token: MarkdownToken): string {
+        if (typeof token.text === "string" && token.text.length > 0) {
+            return token.text;
+        }
+        if (Array.isArray(token.tokens)) {
+            return (token.tokens as MarkdownToken[])
+                .map((child) => {
+                    if (typeof child.text === "string") {
+                        return child.text;
+                    }
+                    if (typeof child.raw === "string") {
+                        return child.raw;
+                    }
+                    return "";
+                })
+                .join("\n")
+                .trim();
         }
         return "";
     }
@@ -297,7 +320,7 @@ export class HwpxXmlRenderer {
             }
 
             if (token.type === "strong") {
-                const strongTokens = this.asTokenArray(token.tokens);
+                const strongTokens = asTokenArray(token.tokens);
                 if (strongTokens.length > 0) {
                     xml += this.renderInlineTokens(strongTokens, this.styleIds.bold);
                 } else {
@@ -309,6 +332,17 @@ export class HwpxXmlRenderer {
 
             if (token.type === "br") {
                 xml += this.parseInlineToRuns("\n", defaultStyleId);
+                continue;
+            }
+
+            if (token.type === "escape") {
+                const escapedRaw = typeof token.raw === "string" ? token.raw : "";
+                if (escapedRaw === "\\*") {
+                    xml += this.parseInlineToRuns("※", defaultStyleId);
+                } else {
+                    const escapedText = typeof token.text === "string" ? token.text : escapedRaw;
+                    xml += this.parseInlineToRuns(escapedText, defaultStyleId);
+                }
                 continue;
             }
 
@@ -371,7 +405,8 @@ export class HwpxXmlRenderer {
             return `<hp:run ${defaultStyleId ? `charPrIDRef="${defaultStyleId}"` : ""}><hp:t></hp:t></hp:run>`;
         }
 
-        let processed = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        const normalizedText = this.normalizeTextForRender(text);
+        let processed = normalizedText.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
         const defAttr = defaultStyleId ? `charPrIDRef="${defaultStyleId}"` : "";
 
         processed = processed.replace(
@@ -398,7 +433,7 @@ export class HwpxXmlRenderer {
 
         let xml = `<hp:tbl id="${tableId}" zOrder="0" numberingType="table" textWrap="topAndBottom" halfFont="0" borderFillIDRef="3" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0" rowCnt="${rowCount}" colCnt="${colCount}" cellSpacing="0">`;
         xml += `<hp:sz width="42000" widthRelTo="ABSOLUTE" height="0" heightRelTo="ABSOLUTE" protect="0"/>`;
-        xml += `<hp:pos treatAsChar="0"/>`;
+        xml += `<hp:pos treatAsChar="0" horzRelTo="PAGE" vertRelTo="PAGE"/>`;
         xml += `<hp:outMargin left="0" right="0" top="0" bottom="0"/>`;
         xml += `<hp:inMargin left="280" right="280" top="280" bottom="280"/>`;
 
@@ -456,7 +491,46 @@ export class HwpxXmlRenderer {
         return maxLengths;
     }
 
-    private asTokenArray(value: unknown): MarkdownToken[] {
-        return Array.isArray(value) ? (value as MarkdownToken[]) : [];
+    private normalizeTableCellText(text: string): string {
+        return text.replace(/<br\s*\/?>/gi, "\n");
+    }
+
+    private normalizeTextForRender(text: string): string {
+        return this.decodeHtmlEntities(text)
+            .replace(/\\\*/g, "※")
+            .replace(/\\([\\'"<>])/g, "$1");
+    }
+
+    private decodeHtmlEntities(text: string): string {
+        return text.replace(/&(#x[0-9a-fA-F]+|#[0-9]+|nbsp|amp|lt|gt|quot|apos);/g, (full, entity) => {
+            const normalizedEntity = String(entity).toLowerCase();
+            if (normalizedEntity === "nbsp") {
+                return " ";
+            }
+            if (normalizedEntity === "amp") {
+                return "&";
+            }
+            if (normalizedEntity === "lt") {
+                return "<";
+            }
+            if (normalizedEntity === "gt") {
+                return ">";
+            }
+            if (normalizedEntity === "quot") {
+                return "\"";
+            }
+            if (normalizedEntity === "apos") {
+                return "'";
+            }
+            if (normalizedEntity.startsWith("#x")) {
+                const codePoint = parseInt(normalizedEntity.slice(2), 16);
+                return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : full;
+            }
+            if (normalizedEntity.startsWith("#")) {
+                const codePoint = parseInt(normalizedEntity.slice(1), 10);
+                return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : full;
+            }
+            return full;
+        });
     }
 }

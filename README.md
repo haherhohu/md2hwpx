@@ -20,9 +20,9 @@ This is an extension that converts Markdown (.md) documents written in VS Code i
 
 - **Tables & Blockquotes**
   - Converts Markdown tables to native Hangul tables (`<hp:tbl>`) (automatic distribution of borders and cell width applied)
-  - If tables appear inside quotations (`>`), the table is lifted and converted as a real table
+  - If a markdown table appears inside quotations (`>` + `|`), the table is lifted and converted as a real table
   - HTML `<table>` blocks inside quotations are also detected and converted into real tables
-  - Plain quotation content remains as normal quoted text flow
+  - Plain quotation content is converted into a 1x1 callout-style table
 
 - **Images**
   - Markdown image tokens are rendered as image placeholders with source path text
@@ -30,6 +30,10 @@ This is an extension that converts Markdown (.md) documents written in VS Code i
 - **Page Flow & Endnotes**
   - Horizontal rule (`---`) is converted to a page-break paragraph
   - Markdown links (`[text](url)`) are converted to numbered markers in body text and collected as endnotes at the end of the document
+
+- **Text Handling**
+  - Escaped entities like `&apos;`, `&quot;`, `&lt;`, `&gt;` are rendered as visible characters
+  - Escaped star (`\*`) is converted to `※`
 
 ## Features in Plan
 

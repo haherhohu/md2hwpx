@@ -43,13 +43,13 @@ suite("HWPX Generator Regression Suite", () => {
 
     test("renders table with non treat-as-character placement", async () => {
         const sectionXml = await generateSectionXml(`| A | B |\n| - | - |\n| 1 | 2 |`);
-        assert.ok(sectionXml.includes('<hp:pos treatAsChar="0"/>'));
+        assert.ok(sectionXml.includes('<hp:pos treatAsChar="0" horzRelTo="PAGE" vertRelTo="PAGE"/>'));
     });
 
-    test("renders plain blockquote as normal text content", async () => {
+    test("renders plain blockquote as 1x1 callout table", async () => {
         const sectionXml = await generateSectionXml(`> just quote`);
         assert.ok(sectionXml.includes("just quote"));
-        assert.ok(!sectionXml.includes("<hp:tbl"));
+        assert.ok(sectionXml.includes("<hp:tbl"));
     });
 
     test("renders plain tables and mixed list+table without dropping tables", async () => {
@@ -102,5 +102,25 @@ suite("HWPX Generator Regression Suite", () => {
         assert.ok(sectionXml.includes("A[1]"));
         assert.ok(sectionXml.includes("A2[1]"));
         assert.ok(!sectionXml.includes("[2] https://a.example"));
+    });
+
+    test("decodes escaped entities in normal and bold text", async () => {
+        const sectionXml = await generateSectionXml(`plain: &apos; &quot; &lt; &gt;\n\n**bold: &apos; &quot; &lt; &gt;**`);
+        assert.ok(sectionXml.includes("plain: ' \" &lt; &gt;"));
+        assert.ok(sectionXml.includes("bold: ' \" &lt; &gt;"));
+        assert.ok(!sectionXml.includes("&amp;lt;"));
+        assert.ok(!sectionXml.includes("&amp;gt;"));
+    });
+
+    test("converts table cell br tags to line breaks", async () => {
+        const sectionXml = await generateSectionXml(`| A |\n| - |\n| line1<br>line2 |`);
+        assert.ok(sectionXml.includes("line1\nline2"));
+        assert.ok(!sectionXml.includes("&lt;br&gt;"));
+    });
+
+    test("converts escaped star into ※", async () => {
+        const sectionXml = await generateSectionXml(String.raw`text \* mark`);
+        assert.ok(sectionXml.includes("※"));
+        assert.ok(!sectionXml.includes("\\*"));
     });
 });
