@@ -10,13 +10,16 @@ All major updates and bug fixes are recorded here.
   - Embedded Markdown images (`![alt](path)`) and inline `<svg>...</svg>` blocks as native `<hp:pic>` nodes in `section0.xml`, packaged into `BinData/` and registered in `Contents/content.hpf` (`<opf:manifest>`) with automatic deduplication.
   - Integrated cross-platform `@resvg/resvg-js` to rasterize `.svg` files and inline SVG diagrams into 300 DPI PNG images (`pHYs` chunk set to `11811 pixels/meter`) with OS CJK/Latin/symbol font fallbacks (`Malgun Gothic`, `Apple SD Gothic Neo`, `NanumGothic`, `Helvetica`, `Arial`, `Apple Symbols`, `Segoe UI Symbol`, `DejaVu Sans`).
   - Normalized SVG 2 `<marker orient="auto-start-reverse">` definitions to SVG 1.1 `orient="auto"` (plus auto-generated 180°-rotated `<marker id="...__start_rev">` clones when `marker-start` is used) so arrowheads follow vertical, diagonal, and bidirectional line angles accurately.
+
 - **Native Table & Image Captions (`<hp:caption>`):**
   - Automatically bound `[표 1-1] ...`, `[표 1] ...`, and `[요약표 1] ...` lines preceding or following a table as top `<hp:caption side="TOP">` captions formatted as `표 1-1.`, `표 1.`, `요약표 1.`.
   - Automatically attached image alt text (`![그림 1-1 ...](...)`) as bottom `<hp:caption side="BOTTOM">` captions mapped to the template's `캡션` style (`styleIDRef="21"`, `paraPrIDRef="19"`).
+
 - **Clickable Hyperlinks, Superscript Footnotes & Hanging-Indent References:**
   - Converted Markdown links (`[label](url)`) and raw URLs (`https://...`) into clickable underlined HWPX `HYPERLINK` field controls (`<hp:fieldBegin type="HYPERLINK">`).
   - Converted Markdown footnotes (`[^1]`, `[^REF-01]`) into superscript (`<hh:supscript>1</hh:supscript>`) bookmark hyperlinks (`?ref_N`) linked to `<hp:bookmark name="ref_N"/>` definitions at the end of the document.
   - Added hanging-indent paragraph style (`paraPr id="1050"`, `intent="-1800" left="1800"`) for footnote and reference lists.
+
 - **Typography, LaTeX Math & Horizontal Rules:**
   - Extended heading support to `H1`–`H6` and added dynamic `<hh:charPr>` generation for combinatorial inline styles (`bold`, `italic`, `strike`, `underline`, `supscript`, `subscript`).
   - Added custom inline parser handling `**Bold**`, `*Italic*`, `_Italic_`, and `~~Strikethrough~~` immediately followed by Korean particles while protecting underscores inside inline code and URLs.
@@ -28,8 +31,10 @@ All major updates and bug fixes are recorded here.
 - **Table Right-Margin Overflow & Multi-Page Splitting:**
   - Dynamically extracted printable body width (`42520 hwpunit` = `150mm`) from `<hp:pagePr>` and `<hp:margin>` in `section0.xml`, removed the `1410 hwpunit` (`5mm`) left/right `<hp:outMargin>`, and changed `<hp:tbl pageBreak="CELL">` so tables fit the exact page margins and split cleanly across pages.
   - Split `<br>`, `<br/>`, and `</br>` tags inside table cells into multiple `<hp:p>` paragraphs while preserving enclosing `**...**` emphasis across lines.
+
 - **Template Initial Blank Line Removal:**
   - Merged the template's initial `<hp:secPr>` and `<hp:colPr>` run directly into the first generated content paragraph so no empty line precedes the document title.
+
 - **OWPML `header.xml` Schema Ordering:**
   - Injected custom `<hh:borderFill>` definitions inside `<hh:borderFills>` with updated `itemCnt` (instead of appending `<hh:borderFillList>` after `<hh:compatibleDocument>`) to prevent HWPX load failures when paragraphs carry `pageBreak="1"`.
 
