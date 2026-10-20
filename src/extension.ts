@@ -38,19 +38,31 @@ export function activate(context: vscode.ExtensionContext) {
         // TODO: 여기서 마크다운 텍스트(mdContent)를 HWP로 변환하는 로직이 들어갈 예정입니다.
         vscode.window.showInformationMessage("마크다운 파일을 한글 문서로 변환할 준비가 되었습니다!");
         const currentFilePath = editor.document.uri.fsPath;
+        const baseDir = path.dirname(currentFilePath);
 
         // 저장할 경로 설정 (현재 마크다운 파일 이름과 동일한 .hwpx 파일)
-        const outputFilePath = currentFilePath.replace(".md", ".hwpx");
+        const outputFilePath = currentFilePath.replace(/\.md$/i, ".hwpx");
 
         // 빈 HWPX 템플릿 경로 설정 (프로젝트 최상단 루트에 'template.hwpx'를 미리 만들어두세요)
         const templatePath = path.join(context.extensionPath, "template.hwpx");
+        // TODO: 사용자 지정 템플릿 설정 기능 (추후 업데이트 시 활성화)
+        // const configuredTemplatePath = vscode.workspace
+        //     .getConfiguration("md2hwpx")
+        //     .get<string>("templatePath", "")
+        //     .trim();
+        // const workspaceRoot = vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath ?? baseDir;
+        // const templatePath = configuredTemplatePath
+        //     ? path.isAbsolute(configuredTemplatePath)
+        //         ? configuredTemplatePath
+        //         : path.resolve(workspaceRoot, configuredTemplatePath)
+        //     : path.join(context.extensionPath, "template.hwpx");
 
         try {
             // 저장 처리 중임을 알리는 메시지
             vscode.window.showInformationMessage("HWPX 파일로 변환을 시작합니다...");
 
             const generator = new HwpxGenerator();
-            await generator.generate(mdContent, templatePath, outputFilePath);
+            await generator.generate(mdContent, templatePath, outputFilePath, baseDir);
 
             vscode.window.showInformationMessage(`변환 완료! 저장 위치: ${outputFilePath}`);
         } catch (error) {
