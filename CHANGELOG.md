@@ -2,7 +2,7 @@
 
 All major updates and bug fixes are recorded here.
 
-## [Unreleased]
+## [0.0.2]
 
 ### Added
 

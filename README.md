@@ -60,7 +60,7 @@ This is an extension that converts Markdown (.md) documents written in VS Code i
 
 ## Release Notes
 
-0.0.1
+0.0.2
 
 You can view the update history in CHANGELOG.md
 
