@@ -2,13 +2,23 @@
 
 All major updates and bug fixes are recorded here.
 
+## [0.0.3] - Hotfix
+
+### Fixed
+
+- **Extension Activation & Packaging Hotfix (`Cannot find module '@resvg/resvg-js'` in v0.0.2):**
+  - Fixed a critical activation error in v0.0.2 where the packaged `.vsix` extension failed to load because `@resvg/resvg-js` was marked as `external` in `esbuild.js` while `node_modules/**` was excluded by `.vscodeignore`.
+  - Migrated the SVG-to-PNG rendering engine from OS-specific native binaries (`@resvg/resvg-js`) to universal WebAssembly (**`@resvg/resvg-wasm`**).
+  - Updated `esbuild.js` to bundle `@resvg/resvg-wasm` directly into `dist/extension.js` (`external: ['vscode']` only) and automatically copy `index_bg.wasm` to `dist/index_bg.wasm`, eliminating all runtime `node_modules` dependencies and enabling a single universal `.vsix` package to run across macOS, Windows, and Linux.
+  - Added asynchronous WebAssembly module initialization (`HwpxXmlRenderer.ensureWasmInitialized()`), cached in-memory system font buffers (`fontBuffers`), and explicit WASM memory deallocation (`rendered.free()`, `resvg.free()`) after each SVG render.
+
 ## [0.0.2]
 
 ### Added
 
 - **Images & 300 DPI SVG Rendering:**
   - Embedded Markdown images (`![alt](path)`) and inline `<svg>...</svg>` blocks as native `<hp:pic>` nodes in `section0.xml`, packaged into `BinData/` and registered in `Contents/content.hpf` (`<opf:manifest>`) with automatic deduplication.
-  - Integrated cross-platform `@resvg/resvg-js` to rasterize `.svg` files and inline SVG diagrams into 300 DPI PNG images (`pHYs` chunk set to `11811 pixels/meter`) with OS CJK/Latin/symbol font fallbacks (`Malgun Gothic`, `Apple SD Gothic Neo`, `NanumGothic`, `Helvetica`, `Arial`, `Apple Symbols`, `Segoe UI Symbol`, `DejaVu Sans`).
+  - Integrated `@resvg/resvg-js` to rasterize `.svg` files and inline SVG diagrams into 300 DPI PNG images (`pHYs` chunk set to `11811 pixels/meter`) with OS CJK/Latin/symbol font fallbacks (`Malgun Gothic`, `Apple SD Gothic Neo`, `NanumGothic`, `Helvetica`, `Arial`, `Apple Symbols`, `Segoe UI Symbol`, `DejaVu Sans`).
   - Normalized SVG 2 `<marker orient="auto-start-reverse">` definitions to SVG 1.1 `orient="auto"` (plus auto-generated 180°-rotated `<marker id="...__start_rev">` clones when `marker-start` is used) so arrowheads follow vertical, diagonal, and bidirectional line angles accurately.
 
 - **Native Table & Image Captions (`<hp:caption>`):**

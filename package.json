@@ -2,7 +2,7 @@
   "name": "md2hwpx",
   "displayName": "md2hwpx",
   "description": "Convert markdown to HWPX",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "engines": {
     "vscode": "^1.125.0"
   },
@@ -61,7 +61,7 @@
     "serialize-javascript": "^7.0.6"
   },
   "dependencies": {
-    "@resvg/resvg-js": "^2.6.2",
+    "@resvg/resvg-wasm": "^2.6.2",
     "jszip": "^3.10.1",
     "marked": "^4.3.0"
   }

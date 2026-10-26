@@ -28,7 +28,7 @@ This is an extension that converts Markdown (.md) documents written in VS Code i
 
 - **Images & 300 DPI SVG Rendering**
   - Embeds Markdown images (`![alt](path)`) and inline `<svg>...</svg>` blocks as native `<hp:pic>` objects in `BinData/` and `Contents/content.hpf` with automatic deduplication
-  - Converts `.svg` files and inline SVG diagrams into crisp **300 DPI PNG** images (`pHYs` `11811 px/m`) cross-platform via `@resvg/resvg-js`, including SVG 2 marker orientation normalization (`orient="auto-start-reverse"` ➔ `orient="auto"` and bidirectional `marker-start` support) and OS CJK/Latin/symbol font fallback
+  - Converts `.svg` files and inline SVG diagrams into crisp **300 DPI PNG** images (`pHYs` `11811 px/m`) cross-platform via `@resvg/resvg-wasm`, including SVG 2 marker orientation normalization (`orient="auto-start-reverse"` ➔ `orient="auto"` and bidirectional `marker-start` support) and OS CJK/Latin/symbol font fallback
   - Attaches image alt text (`![그림 1-1 ...](...)`) as a native bottom caption (`<hp:caption side="BOTTOM">`)
 
 - **Links, Footnotes & References**
@@ -60,9 +60,22 @@ This is an extension that converts Markdown (.md) documents written in VS Code i
 
 ## Release Notes
 
-0.0.2
+### 0.0.3 (Hotfix)
 
-You can view the update history in CHANGELOG.md
+- Fixed an extension activation failure in `0.0.2` (`Cannot find module '@resvg/resvg-js'`) when installed from a packaged `.vsix`.
+- Replaced `@resvg/resvg-js` (OS-specific native `.node` addon) with `@resvg/resvg-wasm` (universal WebAssembly) bundled directly into `dist/` (`dist/extension.js` + `dist/index_bg.wasm`), removing runtime `node_modules` dependencies and supporting macOS, Windows, and Linux in a single package.
+
+### 0.0.2
+
+- Added 300 DPI SVG-to-PNG rendering and native `<hp:pic>` image embedding (`BinData/` & `content.hpf`).
+- Added native table and image captions (`<hp:caption>`), clickable hyperlinks (`HYPERLINK`), superscript footnotes with bookmark links, and hanging-indent reference styling.
+- Fixed table right-margin alignment (`42520 hwpunit`), selectable 0.5mm horizontal rules (`<hp:line>`), and template initial blank line removal.
+
+### 0.0.1
+
+- Initial release of Markdown to HWPX converter.
+
+You can view the full update history in CHANGELOG.md
 
 ## License
 

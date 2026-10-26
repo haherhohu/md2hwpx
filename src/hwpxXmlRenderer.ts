@@ -1,7 +1,7 @@
 import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
-import { Resvg } from "@resvg/resvg-js";
+import { initWasm, Resvg } from "@resvg/resvg-wasm";
 import { EmbeddedImageItem, FootnoteDefinition, MarkdownToken } from "./types";
 import { asTokenArray } from "./tokenUtils";
 
@@ -768,8 +768,42 @@ export class HwpxXmlRenderer {
         );
     }
 
-    private static cachedFontFiles: string[] | undefined = undefined;
+    private static wasmInitialized = false;
+    private static wasmInitPromise: Promise<void> | undefined = undefined;
+    private static cachedFontBuffers: Uint8Array[] | undefined = undefined;
     private static crc32Table: Uint32Array | undefined = undefined;
+
+    public static async ensureWasmInitialized(): Promise<void> {
+        if (HwpxXmlRenderer.wasmInitialized) {
+            return;
+        }
+        if (!HwpxXmlRenderer.wasmInitPromise) {
+            HwpxXmlRenderer.wasmInitPromise = (async () => {
+                const wasmCandidates = [
+                    path.join(__dirname, "index_bg.wasm"),
+                    path.resolve(__dirname, "../dist/index_bg.wasm"),
+                    path.resolve(__dirname, "../node_modules/@resvg/resvg-wasm/index_bg.wasm"),
+                    path.resolve(__dirname, "../../node_modules/@resvg/resvg-wasm/index_bg.wasm"),
+                    path.resolve(process.cwd(), "dist/index_bg.wasm"),
+                    path.resolve(process.cwd(), "node_modules/@resvg/resvg-wasm/index_bg.wasm"),
+                ];
+                let wasmPath: string | undefined;
+                for (const candidate of wasmCandidates) {
+                    if (fs.existsSync(candidate)) {
+                        wasmPath = candidate;
+                        break;
+                    }
+                }
+                if (!wasmPath) {
+                    throw new Error("Could not locate @resvg/resvg-wasm index_bg.wasm");
+                }
+                const wasmBuffer = fs.readFileSync(wasmPath);
+                await initWasm(wasmBuffer);
+                HwpxXmlRenderer.wasmInitialized = true;
+            })();
+        }
+        await HwpxXmlRenderer.wasmInitPromise;
+    }
 
     private registerImageAsset(source: string, inlineSvgContent?: string): string {
         if (inlineSvgContent) {
@@ -846,9 +880,9 @@ export class HwpxXmlRenderer {
         return id;
     }
 
-    private getSystemCjkFontFiles(): string[] {
-        if (HwpxXmlRenderer.cachedFontFiles !== undefined) {
-            return HwpxXmlRenderer.cachedFontFiles;
+    private getSystemCjkFontBuffers(): Uint8Array[] {
+        if (HwpxXmlRenderer.cachedFontBuffers !== undefined) {
+            return HwpxXmlRenderer.cachedFontBuffers;
         }
 
         const candidates = [
@@ -861,7 +895,6 @@ export class HwpxXmlRenderer {
             // macOS (Apple SD Gothic Neo / AppleGothic + Latin/Symbol fallback)
             "/System/Library/Fonts/AppleSDGothicNeo.ttc",
             "/System/Library/Fonts/Supplemental/AppleGothic.ttf",
-            "/System/Library/Fonts/Helvetica.ttc",
             "/System/Library/Fonts/Supplemental/Arial.ttf",
             "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
             "/System/Library/Fonts/Apple Symbols.ttf",
@@ -874,14 +907,18 @@ export class HwpxXmlRenderer {
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         ];
 
-        const found: string[] = [];
+        const found: Uint8Array[] = [];
         for (const fontPath of candidates) {
             if (fs.existsSync(fontPath)) {
-                found.push(fontPath);
+                try {
+                    found.push(new Uint8Array(fs.readFileSync(fontPath)));
+                } catch {
+                    // Ignore unreadable font file
+                }
             }
         }
 
-        HwpxXmlRenderer.cachedFontFiles = found;
+        HwpxXmlRenderer.cachedFontBuffers = found;
         return found;
     }
 
@@ -927,7 +964,7 @@ export class HwpxXmlRenderer {
     private convertSvgToPngBuffer(svgContent: string, dpi = 300): Buffer {
         try {
             const hasText = /<text\b|<tspan\b/i.test(svgContent);
-            const fontFiles = hasText ? this.getSystemCjkFontFiles() : [];
+            const fontBuffers = hasText ? this.getSystemCjkFontBuffers() : [];
             const defaultFont =
                 process.platform === "win32"
                     ? "Malgun Gothic"
@@ -943,8 +980,7 @@ export class HwpxXmlRenderer {
                 },
                 background: "#ffffff",
                 font: {
-                    loadSystemFonts: hasText && fontFiles.length === 0,
-                    fontFiles,
+                    fontBuffers,
                     defaultFontFamily: defaultFont,
                     sansSerifFamily: defaultFont,
                     serifFamily: defaultFont,
@@ -952,7 +988,10 @@ export class HwpxXmlRenderer {
                 },
             });
 
-            const rawPng = Buffer.from(resvg.render().asPng());
+            const rendered = resvg.render();
+            const rawPng = Buffer.from(rendered.asPng());
+            rendered.free();
+            resvg.free();
             return this.injectPngDpi(rawPng, dpi);
         } catch (err) {
             console.error("SVG to PNG conversion failed:", err);

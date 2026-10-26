@@ -10,6 +10,7 @@ export class HwpxGenerator {
 
     public async generate(mdContent: string, templatePath: string, outputPath: string, baseDir?: string) {
         try {
+            await HwpxXmlRenderer.ensureWasmInitialized();
             const effectiveBaseDir = baseDir ?? path.dirname(path.resolve(outputPath));
             const renderer = new HwpxXmlRenderer(effectiveBaseDir);
             const resolvedTemplatePath = this.resolveTemplatePath(templatePath);
