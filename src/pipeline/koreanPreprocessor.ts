@@ -1,8 +1,190 @@
 const FENCE_OPEN_REGEX = /^\s*(`{3,}|~{3,})/;
+const ASCII_PUNCT = /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/;
 
 interface DelimiterOpener {
     kind: "*" | "_" | "~";
     len: number;
+}
+
+interface EmphasisDelimiterToken {
+    kind: "*" | "_" | "~";
+    len: number;
+    raw: string;
+    pos: number;
+    end: number;
+    prev: string;
+    next: string;
+    canOpen: boolean;
+    canClose: boolean;
+}
+
+function isNonAsciiNonSpace(ch: string): boolean {
+    return ch.length > 0 && ch.charCodeAt(0) > 0x7f && !/\s/.test(ch);
+}
+
+function tokenizeEmphasisDelimiters(text: string): EmphasisDelimiterToken[] {
+    const tokens: EmphasisDelimiterToken[] = [];
+    const delimRegex = /\\.|(\*+|_+|~+)/g;
+
+    for (const match of text.matchAll(delimRegex)) {
+        const delim = match[1];
+        if (!delim) {
+            continue;
+        }
+        const kind = delim[0] as "*" | "_" | "~";
+        // Only exact double-tilde `~~` participates in strikethrough (single `~` and `~~~` are literal).
+        if (kind === "~" && delim.length !== 2) {
+            continue;
+        }
+
+        const pos = match.index ?? 0;
+        const prev = pos > 0 ? text[pos - 1] : "";
+        const next = pos + delim.length < text.length ? text[pos + delim.length] : "";
+        const prevSpace = prev === "" || /\s/.test(prev);
+        const nextSpace = next === "" || /\s/.test(next);
+
+        let canOpen = !nextSpace;
+        const canClose = !prevSpace;
+        if (kind === "_") {
+            const prevAsciiWord = /[A-Za-z0-9]/.test(prev);
+            canOpen = !nextSpace && !prevAsciiWord;
+        }
+
+        tokens.push({
+            kind,
+            len: delim.length,
+            raw: delim,
+            pos,
+            end: pos + delim.length,
+            prev,
+            next,
+            canOpen,
+            canClose,
+        });
+    }
+
+    return tokens;
+}
+
+/**
+ * Splits crossed overlapping emphasis (e.g. `~~a **b~~ c**` -> `~~a **b**~~ **c**`)
+ * into cleanly nested AST segments without altering non-crossed spans or unclosed openers.
+ */
+function resolveCrossedEmphasisInSegment(segment: string): string {
+    const tokens = tokenizeEmphasisDelimiters(segment);
+    if (tokens.length < 3) {
+        return segment;
+    }
+
+    const stack: EmphasisDelimiterToken[] = [];
+    const edits: Array<{ offset: number; insert: string }> = [];
+
+    for (let i = 0; i < tokens.length; i += 1) {
+        const tok = tokens[i];
+        if (tok.len > 2) {
+            continue;
+        }
+
+        let matchIdx = -1;
+        if (tok.canClose) {
+            for (let s = stack.length - 1; s >= 0; s -= 1) {
+                if (stack[s].kind === tok.kind && stack[s].len === tok.len) {
+                    matchIdx = s;
+                    break;
+                }
+            }
+        }
+
+        if (matchIdx !== -1) {
+            if (matchIdx === stack.length - 1) {
+                stack.pop();
+            } else {
+                const toSplit: EmphasisDelimiterToken[] = [];
+                for (let s = stack.length - 1; s > matchIdx; s -= 1) {
+                    const inner = stack[s];
+                    const closesLater = tokens
+                        .slice(i + 1)
+                        .some((t) => t.canClose && t.kind === inner.kind && t.len === inner.len);
+                    if (closesLater) {
+                        toSplit.push(inner);
+                    }
+                }
+
+                const keptInner = stack.slice(matchIdx + 1).filter((opener) => toSplit.includes(opener));
+                stack.splice(matchIdx, stack.length - matchIdx, ...keptInner);
+
+                if (toSplit.length > 0) {
+                    let closePos = tok.pos;
+                    while (closePos > 0 && /[ \t]/.test(segment[closePos - 1])) {
+                        closePos -= 1;
+                    }
+                    edits.push({ offset: closePos, insert: toSplit.map((o) => o.raw).join("") });
+
+                    let openPos = tok.end;
+                    while (openPos < segment.length && /[ \t]/.test(segment[openPos])) {
+                        openPos += 1;
+                    }
+                    const reopenOrder = [...toSplit].reverse();
+                    const needSep = openPos === tok.end ? "\uFEFF" : "";
+                    edits.push({
+                        offset: openPos,
+                        insert: `${needSep}${reopenOrder.map((o) => o.raw).join("")}`,
+                    });
+                }
+            }
+        } else if (tok.canOpen) {
+            stack.push(tok);
+        }
+    }
+
+    if (edits.length === 0) {
+        return segment;
+    }
+
+    edits.sort((a, b) => a.offset - b.offset);
+    let out = "";
+    let last = 0;
+    for (const edit of edits) {
+        out += segment.slice(last, edit.offset) + edit.insert;
+        last = edit.offset;
+    }
+    out += segment.slice(last);
+    return out;
+}
+
+function resolveCrossedEmphasisInParagraph(paragraph: string): string {
+    const lines = paragraph.split("\n");
+    if (!lines.some((line) => /^\s*\|/.test(line))) {
+        return resolveCrossedEmphasisInSegment(paragraph);
+    }
+
+    const outLines: string[] = [];
+    let buffer: string[] = [];
+
+    const flushBuffer = () => {
+        if (buffer.length > 0) {
+            outLines.push(resolveCrossedEmphasisInSegment(buffer.join("\n")));
+            buffer = [];
+        }
+    };
+
+    for (const line of lines) {
+        if (/^\s*\|/.test(line)) {
+            flushBuffer();
+            // Process pipe-table rows cell-by-cell so unclosed markers never cross column boundaries.
+            outLines.push(
+                line
+                    .split("|")
+                    .map((cell) => resolveCrossedEmphasisInSegment(cell))
+                    .join("|"),
+            );
+        } else {
+            buffer.push(line);
+        }
+    }
+    flushBuffer();
+
+    return outLines.join("\n");
 }
 
 /**
@@ -105,46 +287,8 @@ function findClosingBackticks(text: string, fromIdx: number, expectedLen: number
 }
 
 function insertBoundarySentinelsInParagraph(paragraph: string): string {
-    const tokens: Array<{
-        kind: "*" | "_" | "~";
-        len: number;
-        pos: number;
-        end: number;
-        canOpen: boolean;
-        canClose: boolean;
-        next: string;
-    }> = [];
-
-    const delimRegex = /\\.|(\*+|_+|~~)/g;
-    for (const match of paragraph.matchAll(delimRegex)) {
-        const delim = match[1];
-        if (!delim) {
-            continue;
-        }
-        const pos = match.index ?? 0;
-        const prev = pos > 0 ? paragraph[pos - 1] : "";
-        const next = pos + delim.length < paragraph.length ? paragraph[pos + delim.length] : "";
-        const prevSpace = prev === "" || /\s/.test(prev);
-        const nextSpace = next === "" || /\s/.test(next);
-        const kind = delim[0] as "*" | "_" | "~";
-
-        let canOpen = !nextSpace;
-        const canClose = !prevSpace;
-        if (kind === "_") {
-            const prevAsciiWord = /[A-Za-z0-9]/.test(prev);
-            canOpen = !nextSpace && !prevAsciiWord;
-        }
-
-        tokens.push({
-            kind,
-            len: delim.length,
-            pos,
-            end: pos + delim.length,
-            canOpen,
-            canClose,
-            next,
-        });
-    }
+    const normalized = resolveCrossedEmphasisInParagraph(paragraph);
+    const tokens = tokenizeEmphasisDelimiters(normalized);
 
     const stack: DelimiterOpener[] = [];
     const insertOffsets = new Set<number>();
@@ -189,28 +333,36 @@ function insertBoundarySentinelsInParagraph(paragraph: string): string {
                 }
             }
 
-            // Insert ZWNBSP only when closing an outermost emphasis span directly before Hangul
-            if (closedAny && stack.length === 0 && /[가-힣]/.test(tok.next)) {
+            // Insert ZWNBSP when closing an emphasis span before non-ASCII text/punctuation (e.g. Hangul or `·`),
+            // without splitting an outer opener of the same delimiter kind (`*안**쪽**에*서`).
+            if (
+                closedAny &&
+                isNonAsciiNonSpace(tok.next) &&
+                (stack.length === 0 || !stack.some((o) => o.kind === tok.kind))
+            ) {
                 insertOffsets.add(tok.end);
             }
         }
 
         if (remaining > 0 && tok.canOpen) {
+            if (tok.kind !== "_" && isNonAsciiNonSpace(tok.prev) && ASCII_PUNCT.test(tok.next)) {
+                insertOffsets.add(tok.pos);
+            }
             stack.push({ kind: tok.kind, len: remaining });
         }
     }
 
     if (insertOffsets.size === 0) {
-        return paragraph;
+        return normalized;
     }
 
     let out = "";
     let last = 0;
     for (const offset of Array.from(insertOffsets).sort((a, b) => a - b)) {
-        out += paragraph.slice(last, offset) + "\uFEFF";
+        out += normalized.slice(last, offset) + "\uFEFF";
         last = offset;
     }
-    out += paragraph.slice(last);
+    out += normalized.slice(last);
     return out;
 }
 

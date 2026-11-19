@@ -82,8 +82,43 @@ export function ensureMarkedExtensionsRegistered(): void {
         },
     };
 
+    const tripleTildeLiteralExtension: marked.TokenizerExtension = {
+        name: "tripleTildeLiteral",
+        level: "inline",
+        start(src: string) {
+            const idx = /~{3,}/.exec(src)?.index;
+            return idx !== undefined ? idx : undefined;
+        },
+        tokenizer(src: string) {
+            const match = /^~{3,}/.exec(src);
+            if (match) {
+                return {
+                    type: "text",
+                    raw: match[0],
+                    text: match[0],
+                };
+            }
+            return undefined;
+        },
+    };
+
     marked.use({
-        extensions: [blockMathExtension, inlineMathExtension, footnoteRefExtension],
+        tokenizer: {
+            del(this: marked.Tokenizer & marked.TokenizerThis, src: string): marked.Tokens.Del | false {
+                const cap = /^~~(?!~)(?=\S)([\s\S]*?\S)(?<!~)~~(?!~)/.exec(src);
+                if (cap) {
+                    return {
+                        type: "del",
+                        raw: cap[0],
+                        text: cap[1],
+                        tokens: this.lexer.inlineTokens(cap[1]),
+                    };
+                }
+                // Returning undefined bypasses marked's fallback to its single-tilde GFM del tokenizer.
+                return undefined as unknown as false;
+            },
+        },
+        extensions: [blockMathExtension, inlineMathExtension, footnoteRefExtension, tripleTildeLiteralExtension],
     });
     extensionsRegistered = true;
 }
