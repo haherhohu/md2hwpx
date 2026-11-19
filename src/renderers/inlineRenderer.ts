@@ -62,7 +62,7 @@ function isBrHtmlToken(token: MarkdownToken): boolean {
  */
 export function splitInlineTokensIntoLines(
     tokens: MarkdownToken[],
-    options: { splitBr: boolean; splitNewlines: boolean },
+    options: { splitBr: boolean; splitNewlines: boolean; splitExplicitBackslash?: boolean },
 ): MarkdownToken[][] {
     const lines: MarkdownToken[][] = [[]];
     const openHtmlStack: string[] = [];
@@ -85,6 +85,11 @@ export function splitInlineTokensIntoLines(
         }
 
         if (options.splitBr && isBrHtmlToken(token)) {
+            startNewLine();
+            continue;
+        }
+
+        if (options.splitExplicitBackslash && token.type === "escape" && token.raw === "\\\\") {
             startNewLine();
             continue;
         }
@@ -126,10 +131,16 @@ export function splitInlineTokensIntoLines(
             continue;
         }
 
-        if (token.type === "text" && options.splitNewlines) {
+        if (token.type === "text" && (options.splitNewlines || options.splitExplicitBackslash)) {
             const textStr = typeof token.text === "string" ? token.text : typeof token.raw === "string" ? token.raw : "";
-            if (/\r?\n/.test(textStr)) {
-                const parts = textStr.split(/\r?\n/);
+            const splitRegex =
+                options.splitNewlines && options.splitExplicitBackslash
+                    ? /\r?\n|\\\\/
+                    : options.splitNewlines
+                      ? /\r?\n/
+                      : /\\\\/;
+            if (splitRegex.test(textStr)) {
+                const parts = textStr.split(splitRegex);
                 for (let idx = 0; idx < parts.length; idx += 1) {
                     if (idx > 0) {
                         startNewLine();

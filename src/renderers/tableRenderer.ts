@@ -3,6 +3,7 @@ import { asTokenArray } from "../tokenUtils";
 import { lexInlineMarkdown } from "../pipeline/markdownExtensions";
 import { preprocessKoreanBoundaries, stripKoreanSentinels } from "../pipeline/koreanPreprocessor";
 import { splitInlineTokensIntoLines } from "./inlineRenderer";
+import { buildMergedTableGrid } from "./tableGridEngine";
 
 export interface TableRendererCallbacks {
     generateHwpId: () => number;
@@ -88,12 +89,38 @@ function estimateCellMaxDisplayLength(cell: TableCellToken): number {
         return 1;
     }
 
-    const lines = splitInlineTokensIntoLines(tokens, { splitBr: true, splitNewlines: true });
+    const lines = splitInlineTokensIntoLines(tokens, {
+        splitBr: true,
+        splitNewlines: true,
+        splitExplicitBackslash: true,
+    });
     let maxLen = 1;
     for (const lineTokens of lines) {
         maxLen = Math.max(maxLen, estimateInlineLineLength(lineTokens));
     }
     return maxLen;
+}
+
+function trimEdgeWhitespaceTokens(tokens: MarkdownToken[]): MarkdownToken[] {
+    if (tokens.length === 0) {
+        return tokens;
+    }
+    const result = tokens.map((t) => ({ ...t }));
+    const first = result[0];
+    if (first.type === "text" && !Array.isArray(first.tokens)) {
+        const textVal = typeof first.text === "string" ? first.text : typeof first.raw === "string" ? first.raw : "";
+        const trimmedStart = textVal.replace(/^[ \t]+/, "");
+        first.text = trimmedStart;
+        first.raw = trimmedStart;
+    }
+    const last = result[result.length - 1];
+    if (last.type === "text" && !Array.isArray(last.tokens)) {
+        const textVal = typeof last.text === "string" ? last.text : typeof last.raw === "string" ? last.raw : "";
+        const trimmedEnd = textVal.replace(/[ \t]+$/, "");
+        last.text = trimmedEnd;
+        last.raw = trimmedEnd;
+    }
+    return result.filter((t) => t.type !== "text" || Array.isArray(t.tokens) || (t.text ?? t.raw ?? "").length > 0);
 }
 
 export class TableRenderer {
@@ -175,16 +202,21 @@ export class TableRenderer {
         }
 
         const widths = this.calculateColumnWidths(columnMaxLengths, totalTableWidth);
+        const mergedGrid = buildMergedTableGrid(safeRows, widths);
 
-        safeRows.forEach((row, rowIndex) => {
+        mergedGrid.forEach((row) => {
             xml += `<hp:tr>`;
-            const isHeaderRow = rowIndex === 0 && rowCount > 1;
-            const cellBorderFillId = isHeaderRow ? borderFillIds.tableHeader : borderFillIds.table;
-            const defaultCellStyleId = isHeaderRow ? styleIds.bold : undefined;
 
-            for (let colIndex = 0; colIndex < colCount; colIndex += 1) {
-                const cellWidth = widths[colIndex] ?? widths[widths.length - 1];
-                const cell = row[colIndex] ?? { text: "", tokens: [] };
+            for (const gridCell of row) {
+                if (gridCell.absorbed) {
+                    continue;
+                }
+
+                const isHeaderRow = gridCell.isHeader;
+                const cellBorderFillId = isHeaderRow ? borderFillIds.tableHeader : borderFillIds.table;
+                const defaultCellStyleId = isHeaderRow ? styleIds.bold : undefined;
+                const cellWidth = gridCell.width;
+                const cell = gridCell.cell;
                 const cellTokens =
                     cell.tokens && cell.tokens.length > 0
                         ? cell.tokens
@@ -195,7 +227,8 @@ export class TableRenderer {
                 const cellLineGroups = splitInlineTokensIntoLines(cellTokens, {
                     splitBr: true,
                     splitNewlines: true,
-                });
+                    splitExplicitBackslash: true,
+                }).map(trimEdgeWhitespaceTokens);
                 const nonEmptyLines = cellLineGroups.filter((lineToks) =>
                     lineToks.some(
                         (t) => t.type !== "text" || stripKoreanSentinels(t.text ?? t.raw ?? "").trim().length > 0,
@@ -204,7 +237,7 @@ export class TableRenderer {
 
                 const effectiveLines = nonEmptyLines.length > 0 ? nonEmptyLines : [[]];
                 const cellAvailableWidth = Math.max(2000, cellWidth - 560);
-                const colAlign = align[colIndex] ?? null;
+                const colAlign = align[gridCell.col] ?? null;
                 const cellParaPrId = isHeaderRow
                     ? colAlign === "left"
                         ? paraPrIds.left
@@ -231,12 +264,12 @@ export class TableRenderer {
                     )
                     .join("");
 
-                const cellHeight = 1800 * Math.max(1, effectiveLines.length);
+                const cellHeight = 1800 * Math.max(1, effectiveLines.length, gridCell.rowSpan);
 
                 xml += `<hp:tc name="" header="${isHeaderRow ? 1 : 0}" hasMargin="1" protect="0" editable="0" dirty="0" borderFillIDRef="${cellBorderFillId}">`;
                 xml += `<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="CENTER" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">${cellParagraphsXml}</hp:subList>`;
-                xml += `<hp:cellAddr colAddr="${colIndex}" rowAddr="${rowIndex}"/>`;
-                xml += `<hp:cellSpan colSpan="1" rowSpan="1"/>`;
+                xml += `<hp:cellAddr colAddr="${gridCell.col}" rowAddr="${gridCell.row}"/>`;
+                xml += `<hp:cellSpan colSpan="${gridCell.colSpan}" rowSpan="${gridCell.rowSpan}"/>`;
                 xml += `<hp:cellSz width="${cellWidth}" height="${cellHeight}"/>`;
                 xml += `<hp:cellMargin left="280" right="280" top="280" bottom="280"/>`;
                 xml += `</hp:tc>`;
