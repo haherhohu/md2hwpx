@@ -125,21 +125,30 @@ suite("HWPX Generator Regression Suite", () => {
         assert.ok(pngBuf.length > 5000, `Expected full 300 DPI PNG (> 5000 bytes), got ${pngBuf.length} bytes`);
     });
 
-    test("normalizes common LaTeX symbols and renders superscript/subscript spans", async () => {
-        const latexText = String.raw`$10^{-3} \sim 10^{-5}$ and $\pm 5\%$ and $\tau_{\text{mod}}$ and $\pm 110^\circ$`;
+    test("renders inline and block LaTeX equations as native <hp:equation> objects and HTML sup/sub as charPr spans", async () => {
+        const latexText = String.raw`$10^{-3} \sim 10^{-5}$ and $\pm 5\%$ and $\tau_{\text{mod}}$ and $\pm 110^\circ$` + "\n\n$$\n\\frac{\\frac{a}{b}}{\\sqrt{c}}\n$$\n\nH<sub>2</sub>O and 10<sup>-3</sup>";
         const { sectionXml, headerXml } = await generateHwpxArchive(latexText);
-        assert.ok(sectionXml.includes("<hp:t>10</hp:t>"));
-        assert.ok(sectionXml.includes("<hp:t>-3</hp:t>"));
-        assert.ok(sectionXml.includes("~"));
-        assert.ok(sectionXml.includes("±"));
-        assert.ok(sectionXml.includes("%"));
-        assert.ok(sectionXml.includes("°"));
-        assert.ok(sectionXml.includes("<hp:t>τ</hp:t>"));
-        assert.ok(sectionXml.includes("<hp:t>mod</hp:t>"));
+        assert.ok(sectionXml.includes("<hp:equation "));
+        assert.ok(sectionXml.includes('treatAsChar="1"'));
+        assert.ok(sectionXml.includes("<hp:script>"));
+        assert.ok(sectionXml.includes("10 ^{-3} sim 10 ^{-5}"));
+        assert.ok(sectionXml.includes("+- 5%"));
+        assert.ok(sectionXml.includes('tau _{rm "mod"}'));
+        assert.ok(sectionXml.includes("+- 110 ^{deg}"));
+        assert.ok(sectionXml.includes("{{{{a} over {b}}} over {sqrt {c}}}"));
+        assert.ok(!/<hp:t(?:\s[^>]*)?>[^<]*\\(?:sim|circ|frac|sqrt)/.test(sectionXml));
         assert.ok(headerXml.includes("<hh:supscript>1</hh:supscript>"));
         assert.ok(headerXml.includes("<hh:subscript>1</hh:subscript>"));
-        assert.ok(!sectionXml.includes("\\sim"));
-        assert.ok(!sectionXml.includes("\\circ"));
+
+        const tempSecPath = path.join(os.tmpdir(), `md2hwpx-eq-sec-${Date.now()}.xml`);
+        fs.writeFileSync(tempSecPath, sectionXml);
+        try {
+            require("child_process").execFileSync("xmllint", ["--noout", tempSecPath], { stdio: "pipe" });
+        } finally {
+            if (fs.existsSync(tempSecPath)) {
+                fs.unlinkSync(tempSecPath);
+            }
+        }
     });
 
     test("renders single horizontal rule as a selectable 0.5mm <hp:line> object with linesegarray, and consecutive separators as page breaks", async () => {

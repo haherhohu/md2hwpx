@@ -6,6 +6,7 @@ import { InlineRenderCallbacks, renderInlineTokensToRuns, splitInlineTokensIntoL
 import { TableRenderer } from "./renderers/tableRenderer";
 import { ImageRenderer } from "./renderers/imageRenderer";
 import { StyleRegistry } from "./renderers/styleRegistry";
+import { convertLatexToHwpScript } from "./math/latexToHwpEqn";
 
 interface BlockRenderContext {
     containerWidth: number;
@@ -186,9 +187,9 @@ export class HwpxXmlRenderer {
                 return this.renderParagraphToken(token, context);
             case "blockMath": {
                 const mathText = typeof token.text === "string" ? token.text : "";
-                const mathRuns = this.renderLatexMathToRuns(mathText, { baseCharPrId: 0 });
+                const eqRun = this.createEquationRun(mathText, true);
                 return this.createParagraphTag(
-                    mathRuns,
+                    eqRun,
                     context.inCallout ? this.styleRegistry.paraPrIds.left : this.styleRegistry.paraPrIds.center,
                 );
             }
@@ -515,7 +516,7 @@ export class HwpxXmlRenderer {
                 this.wrapWithBookmarkHyperlinkField(bookmarkName, innerRunsXml),
             renderFootnoteRef: (id, ctx, fallbackText) => this.renderFootnoteRefToken(id, ctx, fallbackText),
             renderInlineImage: (token, containerWidth) => this.createImagePictureRun(token, containerWidth),
-            renderInlineMath: (latex, ctx) => this.renderLatexMathToRuns(latex, ctx),
+            renderInlineMath: (latex, ctx) => this.createEquationRun(latex, false, ctx),
         };
     }
 
@@ -549,122 +550,39 @@ export class HwpxXmlRenderer {
         return runsXml || this.createRunXml("", this.resolveCharPrId(baseCtx));
     }
 
-    private renderLatexMathToRuns(mathText: string, ctx: InlineStyleContext): string {
-        const normalized = this.normalizeLatexSymbols(mathText);
+    private createEquationRun(latex: string, isBlock: boolean, ctx?: InlineStyleContext): string {
+        const script = convertLatexToHwpScript(latex);
+        const eqId = this.generateHwpId();
+        const baseUnit = isBlock ? 1100 : 1000;
+        const hasFractionOrBigOp = /\b(?:over|root|sum|int|dint|tint|oint|prod|cases)\b/.test(script);
+        const hasMatrix = /\bmatrix\b/.test(script);
+        const rowCount = (script.match(/#/g) ?? []).length + 1;
 
-        // Parse ^{...}, ^x, _{...}, _x into superscript / subscript runs
-        const scriptRegex = /(\^\{([^{}]+)\}|\^([+-]?[A-Za-z0-9]+)|_\{([^{}]+)\}|_([+-]?[A-Za-z0-9]+))/g;
-        let lastIndex = 0;
-        let xml = "";
+        const baseHeight = hasMatrix ? 1400 * rowCount : hasFractionOrBigOp ? 2200 : 1100;
+        const height = isBlock ? Math.max(1400, baseHeight) : baseHeight;
+        const estimatedWidth = Math.min(
+            this.contentWidth,
+            Math.max(1200, Math.round(script.length * (isBlock ? 480 : 420))),
+        );
+        const baseLine = hasFractionOrBigOp || hasMatrix ? 72 : 85;
 
-        while (true) {
-            const match = scriptRegex.exec(normalized);
-            if (!match) {
-                break;
-            }
+        const charPrId = ctx ? this.resolveCharPrId(ctx) : undefined;
+        const charPrAttr = charPrId ? ` charPrIDRef="${charPrId}"` : ` charPrIDRef="0"`;
+        const escapedScript = this.escapeXmlText(script);
+        const escapedComment = this.escapeXmlText(latex.trim());
 
-            if (match.index > lastIndex) {
-                const plainPart = normalized.slice(lastIndex, match.index);
-                xml += this.createRunXml(plainPart, this.resolveCharPrId(ctx));
-            }
-
-            const supBraced = match[2];
-            const supSingle = match[3];
-            const subBraced = match[4];
-            const subSingle = match[5];
-
-            if (supBraced !== undefined || supSingle !== undefined) {
-                const supContent = supBraced ?? supSingle;
-                const supCtx: InlineStyleContext = { ...ctx, supscript: true };
-                xml += this.createRunXml(supContent, this.resolveCharPrId(supCtx));
-            } else if (subBraced !== undefined || subSingle !== undefined) {
-                const subContent = subBraced ?? subSingle;
-                const subCtx: InlineStyleContext = { ...ctx, subscript: true };
-                xml += this.createRunXml(subContent, this.resolveCharPrId(subCtx));
-            }
-
-            lastIndex = match.index + match[0].length;
-        }
-
-        if (lastIndex < normalized.length) {
-            xml += this.createRunXml(normalized.slice(lastIndex), this.resolveCharPrId(ctx));
-        }
-
-        return xml || this.createRunXml(normalized, this.resolveCharPrId(ctx));
-    }
-
-    private normalizeLatexSymbols(text: string): string {
-        let normalized = text.trim();
-        const replacements: Array<[RegExp, string]> = [
-            [/\^\s*\{\s*\\circ\s*\}/g, "°"],
-            [/\^\s*\\circ(?![A-Za-z])/g, "°"],
-            [/\\circ(?![A-Za-z])/g, "°"],
-            [/\\sim(?![A-Za-z])/g, "~"],
-            [/\\approx(?![A-Za-z])/g, "≈"],
-            [/\\equiv(?![A-Za-z])/g, "≡"],
-            [/\\pm(?![A-Za-z])/g, "±"],
-            [/\\mp(?![A-Za-z])/g, "∓"],
-            [/\\times(?![A-Za-z])/g, "×"],
-            [/\\div(?![A-Za-z])/g, "÷"],
-            [/\\cdot(?![A-Za-z])/g, "·"],
-            [/\\(?:le|leq)(?![A-Za-z])/g, "≤"],
-            [/\\(?:ge|geq)(?![A-Za-z])/g, "≥"],
-            [/\\(?:ne|neq)(?![A-Za-z])/g, "≠"],
-            [/\\infty(?![A-Za-z])/g, "∞"],
-            [/\\(?:rightarrow|to)(?![A-Za-z])/g, "→"],
-            [/\\leftarrow(?![A-Za-z])/g, "←"],
-            [/\\leftrightarrow(?![A-Za-z])/g, "↔"],
-            [/\\Rightarrow(?![A-Za-z])/g, "⇒"],
-            [/\\Leftrightarrow(?![A-Za-z])/g, "⇔"],
-            [/\\alpha(?![A-Za-z])/g, "α"],
-            [/\\beta(?![A-Za-z])/g, "β"],
-            [/\\gamma(?![A-Za-z])/g, "γ"],
-            [/\\delta(?![A-Za-z])/g, "δ"],
-            [/\\(?:epsilon|varepsilon)(?![A-Za-z])/g, "ε"],
-            [/\\zeta(?![A-Za-z])/g, "ζ"],
-            [/\\eta(?![A-Za-z])/g, "η"],
-            [/\\theta(?![A-Za-z])/g, "θ"],
-            [/\\iota(?![A-Za-z])/g, "ι"],
-            [/\\kappa(?![A-Za-z])/g, "κ"],
-            [/\\lambda(?![A-Za-z])/g, "λ"],
-            [/\\mu(?![A-Za-z])/g, "μ"],
-            [/\\nu(?![A-Za-z])/g, "ν"],
-            [/\\xi(?![A-Za-z])/g, "ξ"],
-            [/\\pi(?![A-Za-z])/g, "π"],
-            [/\\rho(?![A-Za-z])/g, "ρ"],
-            [/\\sigma(?![A-Za-z])/g, "σ"],
-            [/\\tau(?![A-Za-z])/g, "τ"],
-            [/\\upsilon(?![A-Za-z])/g, "υ"],
-            [/\\(?:phi|varphi)(?![A-Za-z])/g, "φ"],
-            [/\\chi(?![A-Za-z])/g, "χ"],
-            [/\\psi(?![A-Za-z])/g, "ψ"],
-            [/\\omega(?![A-Za-z])/g, "ω"],
-            [/\\Gamma(?![A-Za-z])/g, "Γ"],
-            [/\\Delta(?![A-Za-z])/g, "Δ"],
-            [/\\Theta(?![A-Za-z])/g, "Θ"],
-            [/\\Lambda(?![A-Za-z])/g, "Λ"],
-            [/\\Xi(?![A-Za-z])/g, "Ξ"],
-            [/\\Pi(?![A-Za-z])/g, "Π"],
-            [/\\Sigma(?![A-Za-z])/g, "Σ"],
-            [/\\Phi(?![A-Za-z])/g, "Φ"],
-            [/\\Psi(?![A-Za-z])/g, "Ψ"],
-            [/\\Omega(?![A-Za-z])/g, "Ω"],
-            [/\\(?:text|mathrm|mathbf|mathit|mathsf)\s*\{([^{}]*)\}/g, "$1"],
-            [/\\frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}/g, "($1/$2)"],
-            [/\\left\s*/g, ""],
-            [/\\right\s*/g, ""],
-            [/\\%/g, "%"],
-            [/\\_/g, "_"],
-            [/\\&/g, "&"],
-            [/\\#/g, "#"],
-            [/\{\}/g, ""],
-        ];
-
-        for (const [pattern, replacement] of replacements) {
-            normalized = normalized.replace(pattern, replacement);
-        }
-
-        return normalized;
+        return (
+            `<hp:run${charPrAttr}>` +
+            `<hp:equation id="${eqId}" zOrder="0" numberingType="EQUATION" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" version="Equation Version 60" baseLine="${baseLine}" textColor="#000000" baseUnit="${baseUnit}" lineMode="CHAR" font="HYhwpEQ">` +
+            `<hp:sz width="${estimatedWidth}" widthRelTo="ABSOLUTE" height="${height}" heightRelTo="ABSOLUTE" protect="0"/>` +
+            `<hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>` +
+            `<hp:outMargin left="56" right="56" top="0" bottom="0"/>` +
+            `<hp:shapeComment>${escapedComment}</hp:shapeComment>` +
+            `<hp:script>${escapedScript}</hp:script>` +
+            `</hp:equation>` +
+            `<hp:t/>` +
+            `</hp:run>`
+        );
     }
 
     private createRunXml(text: string, styleId?: number): string {
