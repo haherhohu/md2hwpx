@@ -12,10 +12,10 @@ ref/
 trash/
 
 # migration guideline
-md2hwpx_migration_guideline.md
+md2hwpx_migration_guideline*
+md2hwpx_v2_antigravity_prompts.md
 
 # test files
-bvlos_report_final_v3_final.md
-bvlos_report_final_v3_final.hwpx
-saemangeum_uas_security_testbed_full_report.md
-saemangeum_uas_security_testbed_full_report.hwpx
+
+test-fixtures/local/
+test-output/
