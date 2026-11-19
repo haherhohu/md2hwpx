@@ -2,6 +2,26 @@
 
 All major updates and bug fixes are recorded here.
 
+## [0.0.4]
+
+### Added
+
+- **Native HWPX LaTeX Equations (`<hp:equation>`):** Added a recursive LaTeX-to-HWP equation script converter (`src/math/latexToHwpEqn.ts`) and native `<hp:equation><hp:script>` rendering for inline (`$...$`) and block (`$$...$$`) math, supporting nested fractions, roots, sums/integrals, matrices, `cases`, and Greek symbols.
+- **Binary Image Sizing & Missing-Image Placeholders:** Added pure-Node header parsing for PNG, JPEG, GIF, and WebP (`src/image/imageSizeParser.ts`) to keep small images at 100% natural size and shrink oversized images proportionally within page width/height; generated visible 800×450 placeholder PNGs for all missing image formats (`.png`, `.jpg`, `.svg`, etc.) instead of blank 1×1 pixels.
+- **2D Table Cell Merging & Column Alignment:** Added a grid merge engine (`src/renderers/tableGridEngine.ts`) supporting vertical merges (`^`), horizontal merges (`<`), and explicit cell line breaks (`\\`), plus Markdown column alignment (`:---`, `:---:`, `---:`, defaulting headers to center and body cells to left).
+- **Automated Verification Suite:** Added unit tests (`npm run test:unit`, 60 tests) and local fixture verification (`npm run verify:local`) covering AST boundaries, Korean preprocessing, image sizing, LaTeX conversion, table merging, and `xmllint` XML validation.
+
+### Changed
+
+- **AST-First Parsing & Modular Renderer Architecture:** Replaced regex-based inline parsing (`parseInlineToRuns`) with recursive `marked` AST traversal (`src/renderers/inlineRenderer.ts`) and custom tokenizer extensions (`src/pipeline/markdownExtensions.ts`), and split rendering into focused modules (`StyleRegistry`, `TableRenderer`, `ImageRenderer`, `InlineRenderer`, `hwpxConstants.ts`).
+- **Codebase Cleanup & Constant Consolidation:** Removed unused dead state/helpers (`linkObjects` / `registerLinkObject`), deduplicated hyperlink/table/borderFill/entity XML builders, and centralized HWPX layout and style constants in `src/hwpxConstants.ts` and `src/tokenUtils.ts`.
+
+### Fixed
+
+- **Double-Tilde Strikethrough, Unicode Punctuation & Crossed Emphasis:** Restricted strikethrough parsing to exact `~~...~~` (preventing single-tilde ranges like `Phase 1~3` or `5,000만~1.8억` from turning into strikethrough), extended closing/opening delimiter boundaries to non-ASCII punctuation (`·`, `「`, `」`, etc.), and split crossed overlapping emphasis (`~~...**...~~...**`) into properly nested AST spans.
+- **Endnote Hanging Indent (Shift+Tab) & Left Alignment:** Replaced non-contiguous `paraPr id="1050"` with contiguous 0-based `paraPr` IDs (`itemCnt`-aligned) so Hancom HWP reliably applies `LEFT` alignment, `BREAK_WORD`, `autoTabLeft`, `<hp:tab>`, and `HwpUnitChar` (`-2200`) / `default` (`-4400`, 2×) hanging indents to endnotes and nested lists.
+- **Block Boundaries, Callouts & Inline Media:** Fixed blockquote lazy continuation and pipe-table boundaries without blank lines, preserved AST tokens across captions and HTML tables, rendered blockquotes recursively with `LEFT` alignment, embedded inline images inside paragraphs/tables as `<hp:pic>`, and rendered fenced code blocks literally inside left-aligned callouts.
+
 ## [0.0.3] - Hotfix
 
 ### Fixed
@@ -60,7 +80,7 @@ All major updates and bug fixes are recorded here.
 
 ### Fixed (Bug Fixes and Stabilization)
 
-- **XML Integrity:** Fixed a critical bug where the entire file would not open due to the destruction of the existing tag order when dynamically injecting styles (`charPr`, `paraPr`) (Regular expression (Ensuring safety through base override)
+- **XML Integrity:** Fixed a critical bug where the entire file would not open due to the destruction of the existing tag order when dynamically injecting styles (`charPr`, `paraPr`) (Regular expression (Ensuring safety through base override))
 - **List Indentation:** Fixed an issue where multiple lists were treated as simple text spaces, and implemented perfect indentation by dynamically injecting native Korean paragraph formatting (left margin).
 - **Table Layout:** Fixed an issue where rendering was ignored (vanished) when table objects were included inside the `<hp:run>` tag, and standardized table margins (`inMargin`, `outMargin`).
 

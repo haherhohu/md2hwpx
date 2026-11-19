@@ -8,39 +8,13 @@ This is an extension that converts Markdown (.md) documents written in VS Code i
 
 ## Key Features
 
-- **HWPX Conversion:** Open a Markdown file and run the command to create a `.hwpx` file in the same folder without leaving a leading blank line from the template.
-
-- **Typography & Inline Formatting**
-  - Headings (`H1`–`H6`): Mapped to bold fonts (`H1`: 16pt, `H2`: 14pt, `H3`–`H6`: 12pt)
-  - Emphasis Styles: Full support for `**Bold**`, `*Italic*` / `_Italic_`, `~~Strikethrough~~`, and `<u>Underline</u>`, including markers immediately followed by Korean particles (e.g., `**단어(ABC)**가`)
-  - Protects underscores inside inline code (`` `code_name` ``) and URLs from unintended italic conversion
-  - Automatically prepends a single leading space to ordinary body paragraphs
-
-- **Multilevel Lists**
-  - Automatic symbol conversion based on indentation level (Level 1~6)
-  - Alignment provided using the **Hangul Paragraph Margin (Shift+Tab)** hanging-indent function
-
-- **Tables, Captions & Blockquotes**
-  - Converts Markdown tables to native Hangul tables (`<hp:tbl>`) matched to the exact printable page width (`42520 hwpunit` / `150mm`) with zero horizontal outer margin (`outMargin left="0" right="0"`) and cell-level page break support (`pageBreak="CELL"`)
-  - Automatically attaches `[표 1-1] ...`, `[표 1] ...`, or `[요약표 1] ...` lines above/below a table as native `<hp:caption side="TOP">` captions formatted as `표 1-1.`, `표 1.`, `요약표 1.`
-  - Splits `<br>`, `<br/>`, and `</br>` inside table cells into multiple `<hp:p>` paragraphs while preserving inline styles
-  - Lifts Markdown tables (`>` + `|`) and HTML `<table>` blocks inside blockquotes into real tables, and renders plain blockquotes as 1x1 callout tables
-
-- **Images & 300 DPI SVG Rendering**
-  - Embeds Markdown images (`![alt](path)`) and inline `<svg>...</svg>` blocks as native `<hp:pic>` objects in `BinData/` and `Contents/content.hpf` with automatic deduplication
-  - Converts `.svg` files and inline SVG diagrams into crisp **300 DPI PNG** images (`pHYs` `11811 px/m`) cross-platform via `@resvg/resvg-wasm`, including SVG 2 marker orientation normalization (`orient="auto-start-reverse"` ➔ `orient="auto"` and bidirectional `marker-start` support) and OS CJK/Latin/symbol font fallback
-  - Attaches image alt text (`![그림 1-1 ...](...)`) as a native bottom caption (`<hp:caption side="BOTTOM">`)
-
-- **Links, Footnotes & References**
-  - Renders Markdown links (`[label](url)`) and raw URLs (`https://...`) as clickable underlined HWPX `HYPERLINK` field controls (`<hp:fieldBegin type="HYPERLINK">`)
-  - Converts Markdown footnotes (`[^1]`, `[^REF-01]`) into superscript (`<hh:supscript>`) internal bookmark links (`?ref_N`) jumping to endnote definitions (`<hp:bookmark name="ref_N"/>`)
-  - Applies hanging indentation (`intent="-1800" left="1800"`) to reference and footnote lists
-
-- **Page Flow, Horizontal Rules & LaTeX Math**
-  - Single horizontal rule (`---`) is rendered as a selectable 0.5mm native line object (`<hp:line width="141" treatAsChar="1">`)
-  - Consecutive horizontal rules (`---` followed by `---`) are converted to a page break (`pageBreak="1"`)
-  - Normalizes inline/block LaTeX math (`$...$`, `$$...$$`) into Unicode symbols (`±`, `×`, `÷`, `≤`, `≥`, `≠`, `≈`, `∼`, `°`, Greek letters) and native superscript/subscript runs (`^`, `_`)
-  - Escaped entities (`&apos;`, `&quot;`, `&lt;`, `&gt;`) and escaped star (`\*` ➔ `※`) are cleanly normalized
+- **One-Click HWPX Export:** Converts `.md` files in VS Code into OWPML-compliant `.hwpx` files in the same folder.
+- **Typography & Inline Styles:** Supports `H1`–`H6`, `**bold**`, `*italic*`, `~~strikethrough~~`, `<u>underline</u>`, `<sup>`/`<sub>`, and Korean particle / Unicode punctuation boundaries (e.g., `**단어(ABC)**가`, `**기관(KCL)**·`) without misparsing inline code, URLs, or single-tilde ranges (`1~3`).
+- **Multilevel Lists & Callouts:** Converts 6-level nested lists with hanging indents, renders blockquotes and fenced code blocks as left-aligned callout boxes, and handles horizontal rules (`---`) and page breaks (`---` × 2).
+- **Tables & Captions:** Converts Markdown and HTML tables with column alignment, `<br>` line splits, 2D cell merges (`^`, `<`, `\\`), cell-level page breaks, and automatic top/bottom captions (`[표 1-1]`, `[그림 1-1]`).
+- **Images & 300 DPI SVG:** Embeds local images (PNG/JPEG/GIF/WebP) preserving original dimensions and aspect ratios, renders `.svg` files and inline `<svg>` diagrams at 300 DPI PNG via `@resvg/resvg-wasm`, and generates visible placeholders for missing images.
+- **Native Math Equations:** Converts inline (`$...$`) and block (`$$...$$`) LaTeX math into native Hangul equation objects.
+- **Links & Footnotes:** Renders Markdown links and raw URLs as clickable hyperlinks, and converts footnotes (`[^1]`) into superscript bookmark links with left-aligned hanging-indent endnotes.
 
 ## Features in Plan
 
@@ -60,22 +34,14 @@ This is an extension that converts Markdown (.md) documents written in VS Code i
 
 ## Release Notes
 
-### 0.0.3 (Hotfix)
+### 0.0.4
 
-- Fixed an extension activation failure in `0.0.2` (`Cannot find module '@resvg/resvg-js'`) when installed from a packaged `.vsix`.
-- Replaced `@resvg/resvg-js` (OS-specific native `.node` addon) with `@resvg/resvg-wasm` (universal WebAssembly) bundled directly into `dist/` (`dist/extension.js` + `dist/index_bg.wasm`), removing runtime `node_modules` dependencies and supporting macOS, Windows, and Linux in a single package.
+- Re-architected the parser and renderer into a modular `marked` AST pipeline (`StyleRegistry`, `TableRenderer`, `ImageRenderer`, `InlineRenderer`) with centralized constants (`hwpxConstants.ts`).
+- Added native LaTeX-to-HWP equation (`<hp:equation>`) conversion and 2D table cell merging (`^`, `<`, `\\`) with column alignment support.
+- Added binary image dimension parsing (PNG/JPEG/GIF/WebP) to preserve natural image sizes and aspect ratios, plus visible 800×450 placeholder PNGs for all missing image formats.
+- Fixed single-tilde range false strikethroughs (`~~` only), Unicode punctuation emphasis boundaries (`·`, quotes), crossed overlapping emphasis (`~~...**...~~...**`), and contiguous `paraPr` hanging indents / left alignment for endnotes.
 
-### 0.0.2
-
-- Added 300 DPI SVG-to-PNG rendering and native `<hp:pic>` image embedding (`BinData/` & `content.hpf`).
-- Added native table and image captions (`<hp:caption>`), clickable hyperlinks (`HYPERLINK`), superscript footnotes with bookmark links, and hanging-indent reference styling.
-- Fixed table right-margin alignment (`42520 hwpunit`), selectable 0.5mm horizontal rules (`<hp:line>`), and template initial blank line removal.
-
-### 0.0.1
-
-- Initial release of Markdown to HWPX converter.
-
-You can view the full update history in CHANGELOG.md
+You can view the full update history in [CHANGELOG.md](CHANGELOG.md)
 
 ## License
 

@@ -3,6 +3,7 @@
 out/**
 node_modules/**
 src/**
+src/test/**
 .gitignore
 .yarnrc
 esbuild.js
@@ -12,3 +13,12 @@ vsc-extension-quickstart.md
 **/*.map
 **/*.ts
 **/.vscode-test.*
+
+test-fixtures/**
+test-output/**
+trash/**
+ref/**
+
+md2hwpx_migration_guideline*
+md2hwpx_v2_antigravity_prompts.md
+scratch.md
