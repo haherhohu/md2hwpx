@@ -1,6 +1,7 @@
-import { marked } from "marked";
 import { FootnoteDefinition, MarkdownToken, TableCellToken } from "./types";
 import { asTokenArray } from "./tokenUtils";
+import { lexInlineMarkdown, lexMarkdown } from "./pipeline/markdownExtensions";
+import { preprocessKoreanBoundaries, stripKoreanSentinels } from "./pipeline/koreanPreprocessor";
 
 const FENCE_OPEN_REGEX = /^\s*(`{3,}|~{3,})/;
 const TABLE_START_ROW_REGEX = /^\s{0,3}\|/;
@@ -13,7 +14,8 @@ export class MarkdownPipeline {
         const { cleanedMarkdown, footnoteDefs } = this.extractFootnoteDefinitions(mdContent);
         const protectedHtmlMarkdown = this.protectMultiLineHtmlBlocks(cleanedMarkdown);
         const boundedMarkdown = this.ensureBlockBoundaries(protectedHtmlMarkdown);
-        const tokens = marked.lexer(boundedMarkdown) as unknown as MarkdownToken[];
+        const koreanPreparedMarkdown = preprocessKoreanBoundaries(boundedMarkdown);
+        const tokens = lexMarkdown(koreanPreparedMarkdown);
 
         if (footnoteDefs.length > 0) {
             tokens.push({
@@ -413,7 +415,7 @@ export class MarkdownPipeline {
                     tok.isCaption = true;
                     tok.text = capText;
                     tok.raw = capText;
-                    tok.tokens = marked.Lexer.lexInline(capText) as unknown as MarkdownToken[];
+                    tok.tokens = lexInlineMarkdown(preprocessKoreanBoundaries(capText));
                     tok.caption = capText;
                 }
                 continue;
@@ -464,7 +466,9 @@ export class MarkdownPipeline {
         if (!token || (token.type !== "paragraph" && token.type !== "html" && token.type !== "heading")) {
             return undefined;
         }
-        const rawText = (typeof token.text === "string" ? token.text : typeof token.raw === "string" ? token.raw : "").trim();
+        const rawText = stripKoreanSentinels(
+            typeof token.text === "string" ? token.text : typeof token.raw === "string" ? token.raw : "",
+        ).trim();
         if (!rawText || /\r?\n/.test(rawText)) {
             return undefined;
         }
@@ -662,7 +666,7 @@ export class MarkdownPipeline {
 
         const makeCell = (text: string): TableCellToken => ({
             text,
-            tokens: marked.Lexer.lexInline(text) as unknown as MarkdownToken[],
+            tokens: lexInlineMarkdown(preprocessKoreanBoundaries(text)),
         });
 
         const [header, ...bodyRows] = parsedRows;

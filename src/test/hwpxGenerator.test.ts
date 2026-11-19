@@ -348,4 +348,30 @@ suite("HWPX Generator Regression Suite", () => {
         assert.strictEqual(img!.href, "assets/diagram(v2).png");
         assert.strictEqual(img!.text, "그림 [1]");
     });
+
+    test("renders inline image with nested brackets and parens as <hp:pic> rather than broken ! link", async () => {
+        const sectionXml = await generateSectionXml(`설명 중 ![alt [inner]](dir/file(1).png) 계속`);
+        assert.ok(sectionXml.includes("<hp:pic"));
+        assert.ok(!sectionXml.includes('type="HYPERLINK"'));
+        assert.ok(!/<hp:t[^>]*>[^<]*!<\/hp:t>/.test(sectionXml));
+    });
+
+    test("renders nested emphasis (*안**쪽**에*서) without dropping styles or leaking markers", async () => {
+        const { sectionXml, headerXml } = await generateHwpxArchive(`*안**쪽**에*서 계속`);
+        assert.ok(!sectionXml.includes("*"));
+        assert.ok(!sectionXml.includes("\u200B"));
+        assert.ok(!sectionXml.includes("\uFEFF"));
+        assert.ok(sectionXml.includes("<hp:t>안</hp:t>"));
+        assert.ok(sectionXml.includes("<hp:t>쪽</hp:t>"));
+        assert.ok(sectionXml.includes("<hp:t>에</hp:t>"));
+        assert.ok(sectionXml.includes("<hp:t>서 계속</hp:t>"));
+        assert.ok(headerXml.includes("<hh:bold>1</hh:bold><hh:italic>1</hh:italic>"));
+    });
+
+    test("renders inline codespan literally without triggering emphasis, math, or footnote parsing", async () => {
+        const sectionXml = await generateSectionXml("코드 `*a_b* $x$ [^1]` 확인");
+        assert.ok(sectionXml.includes("*a_b* $x$ [^1]"));
+        assert.ok(!sectionXml.includes("미주"));
+        assert.ok(!sectionXml.includes("?ref_1"));
+    });
 });

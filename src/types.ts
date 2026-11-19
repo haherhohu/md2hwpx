@@ -15,10 +15,23 @@ export interface TableCellToken {
     tokens?: MarkdownToken[];
 }
 
+export interface InlineStyleContext {
+    baseCharPrId: number;
+    bold?: boolean;
+    italic?: boolean;
+    strike?: boolean;
+    underline?: boolean;
+    supscript?: boolean;
+    subscript?: boolean;
+    inLink?: boolean;
+}
+
 export interface MarkdownToken {
     type: string;
     raw?: string;
     text?: string;
+    id?: string;
+    display?: boolean;
     tokens?: MarkdownToken[];
     depth?: number;
     ordered?: boolean;

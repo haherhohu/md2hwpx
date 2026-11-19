@@ -2,19 +2,11 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { initWasm, Resvg } from "@resvg/resvg-wasm";
-import { EmbeddedImageItem, FootnoteDefinition, MarkdownToken } from "./types";
+import { EmbeddedImageItem, FootnoteDefinition, InlineStyleContext, MarkdownToken } from "./types";
 import { asTokenArray } from "./tokenUtils";
-
-interface InlineStyleContext {
-    baseCharPrId: number;
-    bold?: boolean;
-    italic?: boolean;
-    strike?: boolean;
-    underline?: boolean;
-    supscript?: boolean;
-    subscript?: boolean;
-    linkId?: number;
-}
+import { lexInlineMarkdown } from "./pipeline/markdownExtensions";
+import { preprocessKoreanBoundaries, stripKoreanSentinels } from "./pipeline/koreanPreprocessor";
+import { InlineRenderCallbacks, renderInlineTokensToRuns, splitInlineTokensIntoLines } from "./renderers/inlineRenderer";
 
 interface DynamicCharPrSpec {
     id: number;
@@ -25,14 +17,6 @@ interface DynamicCharPrSpec {
     underline: boolean;
     supscript: boolean;
     subscript: boolean;
-}
-
-interface ProtectedInlineToken {
-    kind: "CODE" | "IMAGE" | "LINK" | "FOOTNOTE" | "MATH" | "RAW_URL";
-    text?: string;
-    label?: string;
-    href?: string;
-    raw?: string;
 }
 
 // 1x1 solid white PNG fallback buffer
@@ -491,15 +475,24 @@ export class HwpxXmlRenderer {
                 };
                 const depth = typeof token.depth === "number" ? token.depth : 6;
                 const hId = headingMap[depth] ?? this.styleIds.h6;
-                const rawHeadingText = this.reconstructTokenMarkdown(token);
+                const rawHeadingText = stripKoreanSentinels(this.reconstructTokenMarkdown(token));
                 if (/참고문헌|References|미주/i.test(rawHeadingText)) {
                     this.hasExplicitReferenceHeading = true;
                 }
-                const headingRuns = this.parseInlineToRuns(rawHeadingText, hId);
-                return this.createParagraphTag(headingRuns);
+                const headingTokens = asTokenArray(token.tokens);
+                const headingRuns =
+                    headingTokens.length > 0
+                        ? this.renderInlineTokens(headingTokens, { baseCharPrId: hId })
+                        : this.parseInlineToRuns(rawHeadingText, hId);
+                return this.createParagraphTag(headingRuns || this.createRunXml("", hId));
             }
             case "paragraph":
                 return this.renderParagraphToken(token);
+            case "blockMath": {
+                const mathText = typeof token.text === "string" ? token.text : "";
+                const mathRuns = this.renderLatexMathToRuns(mathText, { baseCharPrId: 0 });
+                return this.createParagraphTag(mathRuns, this.paraPrIds.center);
+            }
             case "hr": {
                 const isPageBreak = token.ruleStyle === "pageBreak";
                 if (isPageBreak) {
@@ -538,23 +531,28 @@ export class HwpxXmlRenderer {
                 let isFirstText = true;
                 for (const child of childTokens) {
                     if (child.type === "text" || child.type === "paragraph") {
-                        const prefix = isFirstText ? `${marker} ` : "";
-                        const childMarkdown = this.reconstructTokenMarkdown(child);
-                        const lines = this.distributeEmphasisAcrossLineBreaks(childMarkdown)
-                            .split(/<\/?br\s*\/?>|\n/gi)
-                            .map((s) => s.trim())
-                            .filter((s) => s.length > 0);
+                        const inlineTokens = asTokenArray(child.tokens);
+                        const lineGroups =
+                            inlineTokens.length > 0
+                                ? splitInlineTokensIntoLines(inlineTokens, { splitBr: true, splitNewlines: true })
+                                : splitInlineTokensIntoLines(
+                                      lexInlineMarkdown(preprocessKoreanBoundaries(this.reconstructTokenMarkdown(child))),
+                                      { splitBr: true, splitNewlines: true },
+                                  );
 
-                        if (lines.length === 0) {
+                        const nonEmptyLines = lineGroups.filter((lineToks) =>
+                            lineToks.some(
+                                (t) => t.type !== "text" || stripKoreanSentinels(t.text ?? t.raw ?? "").trim().length > 0,
+                            ),
+                        );
+                        if (nonEmptyLines.length === 0) {
                             continue;
                         }
 
-                        for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
-                            const linePrefix = isFirstText && lineIdx === 0 ? prefix : "";
-                            xml += this.createParagraphTag(
-                                `${this.parseInlineToRuns(linePrefix)}${this.parseInlineToRuns(lines[lineIdx])}`,
-                                paraPrId,
-                            );
+                        for (let lineIdx = 0; lineIdx < nonEmptyLines.length; lineIdx += 1) {
+                            const linePrefixXml = isFirstText && lineIdx === 0 ? this.createRunXml(`${marker} `) : "";
+                            const lineRunsXml = this.renderInlineTokens(nonEmptyLines[lineIdx], { baseCharPrId: 0 });
+                            xml += this.createParagraphTag(`${linePrefixXml}${lineRunsXml}`, paraPrId);
                         }
                         isFirstText = false;
                     } else if (child.type === "list") {
@@ -597,34 +595,49 @@ export class HwpxXmlRenderer {
     }
 
     private renderParagraphToken(token: MarkdownToken): string {
-        const rawParagraph = this.reconstructTokenMarkdown(token);
-        if (!rawParagraph || rawParagraph.trim() === "") {
-            return this.createParagraphTag(this.parseInlineToRuns(""));
-        }
+        const inlineTokens = asTokenArray(token.tokens);
 
         if (token.isCaption) {
-            const captionXml = this.parseInlineToRuns(rawParagraph.trim(), this.captionStyle.charPrId);
+            const captionXml =
+                inlineTokens.length > 0
+                    ? this.renderInlineTokens(inlineTokens, { baseCharPrId: this.captionStyle.charPrId })
+                    : this.parseInlineToRuns(this.reconstructTokenMarkdown(token).trim(), this.captionStyle.charPrId);
             return this.createParagraphTag(captionXml, this.captionStyle.paraPrId, 0, this.captionStyle.styleId);
         }
 
-        const distributed = this.distributeEmphasisAcrossLineBreaks(rawParagraph);
-        const lines = distributed.split(/<\/?br\s*\/?>/gi);
+        if (inlineTokens.length > 0) {
+            const lineGroups = splitInlineTokensIntoLines(inlineTokens, { splitBr: true, splitNewlines: false });
+            if (lineGroups.length > 1) {
+                return lineGroups
+                    .map((lineToks) => {
+                        const hasContent = lineToks.some(
+                            (t) => t.type !== "text" || stripKoreanSentinels(t.text ?? t.raw ?? "").trim().length > 0,
+                        );
+                        if (!hasContent) {
+                            return this.createParagraphTag(this.createRunXml(""));
+                        }
+                        const leadingSpaceXml = this.createRunXml(" ");
+                        const lineXml = this.renderInlineTokens(lineToks, { baseCharPrId: 0 });
+                        return this.createParagraphTag(`${leadingSpaceXml}${lineXml}`);
+                    })
+                    .join("");
+            }
 
-        if (lines.length > 1) {
-            return lines
-                .map((line) => {
-                    const trimmed = line.trim();
-                    if (!trimmed) {
-                        return this.createParagraphTag(this.parseInlineToRuns(""));
-                    }
-                    const leadingSpaceXml = this.parseInlineToRuns(" ");
-                    return this.createParagraphTag(`${leadingSpaceXml}${this.parseInlineToRuns(trimmed)}`);
-                })
-                .join("");
+            const contentXml = this.renderInlineTokens(inlineTokens, { baseCharPrId: 0 });
+            if (!contentXml) {
+                return this.createParagraphTag(this.createRunXml(""));
+            }
+            const leadingSpaceXml = this.createRunXml(" ");
+            return this.createParagraphTag(`${leadingSpaceXml}${contentXml}`);
+        }
+
+        const rawParagraph = this.reconstructTokenMarkdown(token);
+        if (!rawParagraph || rawParagraph.trim() === "") {
+            return this.createParagraphTag(this.createRunXml(""));
         }
 
         const contentXml = this.parseInlineToRuns(rawParagraph);
-        const leadingSpaceXml = this.parseInlineToRuns(" ");
+        const leadingSpaceXml = this.createRunXml(" ");
         return this.createParagraphTag(`${leadingSpaceXml}${contentXml}`);
     }
 
@@ -714,11 +727,11 @@ export class HwpxXmlRenderer {
     }
 
     private createImageParagraph(token: MarkdownToken): string {
-        const picRunXml = this.createImagePictureRun(token, this.paraPrIds.center);
+        const picRunXml = this.createImagePictureRun(token, this.contentWidth);
         return this.createParagraphTag(picRunXml, this.paraPrIds.center);
     }
 
-    private createImagePictureRun(token: MarkdownToken, defaultStyleId?: number): string {
+    private createImagePictureRun(token: MarkdownToken, maxWidth = this.contentWidth): string {
         const altText = typeof token.text === "string" && token.text.length > 0 ? token.text : "image";
         const source = typeof token.href === "string" && token.href.length > 0 ? token.href : "inline.svg";
         const svgContent = typeof token.svgContent === "string" ? token.svgContent : undefined;
@@ -727,10 +740,10 @@ export class HwpxXmlRenderer {
         const binaryId = this.registerImageAsset(source, svgContent);
         const picId = this.generateHwpId();
         const instId = this.generateHwpId();
-        const width = this.contentWidth;
+        const width = Math.min(this.contentWidth, Math.max(2000, maxWidth));
         const dims = this.imageAspectRatioMap.get(binaryId);
         const height = dims && dims.width > 0 ? Math.max(4000, Math.round((width * dims.height) / dims.width)) : Math.round((width * 9) / 16);
-        const styleAttr = defaultStyleId ? ` charPrIDRef="${defaultStyleId}"` : "";
+        const styleAttr = ` charPrIDRef="0"`;
         const captionXml = token.caption ? this.createCaptionXml(token.caption, token.captionSide ?? "BOTTOM", width) : "";
 
         return (
@@ -1319,266 +1332,49 @@ export class HwpxXmlRenderer {
         );
     }
 
-    private distributeEmphasisAcrossLineBreaks(text: string): string {
-        if (!text || !/<\/?br\s*\/?>/i.test(text)) {
-            return text;
-        }
-
-        let result = text;
-        const markers = ["***", "**", "__", "~~"];
-        for (const marker of markers) {
-            const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-            const regex = new RegExp(`${escaped}([\\s\\S]*?)${escaped}`, "g");
-            result = result.replace(regex, (full, inner: string) => {
-                if (!/<\/?br\s*\/?>/i.test(inner)) {
-                    return full;
-                }
-                const parts = inner.split(/<\/?br\s*\/?>/i);
-                return parts
-                    .map((p) => {
-                        const trimmed = p.trim();
-                        return trimmed ? `${marker}${trimmed}${marker}` : "";
-                    })
-                    .join("<br/>");
-            });
-        }
-        return result;
+    private getInlineRenderCallbacks(): InlineRenderCallbacks {
+        return {
+            resolveCharPrId: (ctx) => this.resolveCharPrId(ctx),
+            createRunXml: (text, styleId) => this.createRunXml(text, styleId),
+            decodeHtmlEntities: (text) => this.decodeHtmlEntities(text),
+            registerLinkObject: (href, type) => this.registerLinkObject(href, type),
+            wrapWithWebHyperlinkField: (url, innerRunsXml) => this.wrapWithWebHyperlinkField(url, innerRunsXml),
+            wrapWithBookmarkHyperlinkField: (bookmarkName, innerRunsXml) =>
+                this.wrapWithBookmarkHyperlinkField(bookmarkName, innerRunsXml),
+            renderFootnoteRef: (id, ctx, fallbackText) => this.renderFootnoteRefToken(id, ctx, fallbackText),
+            renderInlineImage: (token, containerWidth) => this.createImagePictureRun(token, containerWidth),
+            renderInlineMath: (latex, ctx) => this.renderLatexMathToRuns(latex, ctx),
+        };
     }
 
-    private parseInlineToRuns(text: string, defaultStyleId?: number, linkId?: number): string {
+    private renderFootnoteRefToken(fnId: string, ctx: InlineStyleContext, fallbackText?: string): string {
+        const { index, target } = this.registerFootnoteReference(fnId, fallbackText);
+        this.registerLinkObject(target, "REF");
+        const fnCtx: InlineStyleContext = { ...ctx, underline: true, supscript: true };
+        const fnRunXml = this.createRunXml(`[${index}]`, this.resolveCharPrId(fnCtx));
+        return this.wrapWithBookmarkHyperlinkField(`ref_${index}`, fnRunXml);
+    }
+
+    private renderInlineTokens(
+        tokens: MarkdownToken[],
+        styleContext: InlineStyleContext,
+        containerWidth = this.contentWidth,
+    ): string {
+        return renderInlineTokensToRuns(tokens, styleContext, this.getInlineRenderCallbacks(), containerWidth);
+    }
+
+    private parseInlineToRuns(text: string, defaultStyleId?: number): string {
         const baseCtx: InlineStyleContext = {
             baseCharPrId: defaultStyleId ?? 0,
-            linkId,
         };
 
         if (!text) {
             return this.createRunXml("", this.resolveCharPrId(baseCtx));
         }
 
-        const protectedTokens: ProtectedInlineToken[] = [];
-        const addProtected = (tok: ProtectedInlineToken): string => {
-            const idx = protectedTokens.length;
-            protectedTokens.push(tok);
-            return `\u0000TOK_${idx}_\u0000`;
-        };
-
-        let working = text;
-
-        // 1. Protect inline code spans (`...`) first so underscores/asterisks/math inside code are untouched
-        working = working.replace(/`([^`\n]+)`/g, (_m, codeContent: string) => addProtected({ kind: "CODE", text: codeContent }));
-
-        // 2. Protect inline images ![alt](href)
-        working = working.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (raw, alt: string, href: string) =>
-            addProtected({ kind: "IMAGE", label: alt.trim(), href: href.trim(), raw }),
-        );
-
-        // 3. Protect footnote references [^id] BEFORE general links
-        working = working.replace(/\[\^([A-Za-z0-9_-]+)\]/g, (raw, fnId: string) => addProtected({ kind: "FOOTNOTE", label: fnId.trim(), raw }));
-
-        // 4. Protect markdown links [label](href) (allowing balanced 1-level parens in URL)
-        working = working.replace(/\[([^\]]+)\]\(((?:[^()\s]+|\([^()\s]*\))+)\)/g, (raw, label: string, href: string) =>
-            addProtected({ kind: "LINK", label, href: href.trim(), raw }),
-        );
-
-        // 4b. Protect angle-bracket autolinks <https://...>
-        working = working.replace(/<(https?:\/\/[^\s>]+)>/g, (_raw, url: string) =>
-            addProtected({ kind: "RAW_URL", href: url.trim(), text: url.trim() }),
-        );
-
-        // 5. Protect LaTeX block math $$...$$ and inline math $...$
-        working = working.replace(/\$\$([\s\S]+?)\$\$/g, (_m, mathContent: string) => addProtected({ kind: "MATH", text: mathContent }));
-        working = working.replace(/\$([^$\n]+)\$/g, (_m, mathContent: string) => addProtected({ kind: "MATH", text: mathContent }));
-
-        // 6. Protect raw URLs (https://... or http://...) so underscores in URLs are never italicized
-        working = working.replace(/https?:\/\/[^\s)\]>]+/g, (rawUrl) => {
-            // Strip trailing punctuation like .,; if attached to URL in prose
-            const trailingMatch = rawUrl.match(/([.,;]+)$/);
-            if (trailingMatch) {
-                const suffix = trailingMatch[1];
-                const cleanUrl = rawUrl.slice(0, -suffix.length);
-                return addProtected({ kind: "RAW_URL", href: cleanUrl, text: cleanUrl }) + suffix;
-            }
-            return addProtected({ kind: "RAW_URL", href: rawUrl, text: rawUrl });
-        });
-
-        // 7. Convert inline HTML emphasis tags to markdown equivalents and clean stray HTML tags
-        working = this.normalizeInlineText(working);
-
-        // 8. Recursively parse emphasis and expand protected tokens into <hp:run> XML
-        const runsXml = this.renderInlineRecursive(working, baseCtx, protectedTokens);
+        const inlineTokens = lexInlineMarkdown(preprocessKoreanBoundaries(text));
+        const runsXml = this.renderInlineTokens(inlineTokens, baseCtx, this.contentWidth);
         return runsXml || this.createRunXml("", this.resolveCharPrId(baseCtx));
-    }
-
-    private normalizeInlineText(text: string): string {
-        let normalized = this.decodeHtmlEntities(text)
-            .replace(/\\\*/g, "※")
-            .replace(/\\([\\'"<>])/g, "$1")
-            .replace(/\\([&%#_])/g, "$1")
-            .replace(/<(strong|b)\b[^>]*>([\s\S]*?)<\/\1>/gi, "**$2**")
-            .replace(/<(em|i)\b[^>]*>([\s\S]*?)<\/\1>/gi, "*$2*")
-            .replace(/<(del|s|strike)\b[^>]*>([\s\S]*?)<\/\1>/gi, "~~$2~~")
-            .replace(/<u\b[^>]*>([\s\S]*?)<\/u>/gi, "\u0000U_OPEN\u0000$1\u0000U_CLOSE\u0000")
-            .replace(/<\/?br\s*\/?>/gi, "\n");
-
-        // Strip stray/orphan HTML tags (e.g. </span>)
-        normalized = normalized.replace(/<\/?[A-Za-z][A-Za-z0-9-]*(?:\s+[^>]*)?>/g, "");
-        normalized = normalized.replace(/\u0000U_OPEN\u0000/g, "<u>").replace(/\u0000U_CLOSE\u0000/g, "</u>");
-        return normalized;
-    }
-
-    private renderInlineRecursive(text: string, ctx: InlineStyleContext, protectedTokens: ProtectedInlineToken[]): string {
-        if (!text) {
-            return "";
-        }
-
-        // Combined emphasis regex matching earliest construct:
-        // 1: ***...***
-        // 2: **...**
-        // 3: __...__
-        // 4: ~~...~~
-        // 5: <u>...</u>
-        // 6: *...* (single asterisk)
-        // 7: _..._ (underscore not between ASCII word characters, allowing Korean particles right after)
-        const emphasisRegex =
-            /(\*\*\*([\s\S]+?)\*\*\*|\*\*([\s\S]+?)\*\*|__([\s\S]+?)__|~~([\s\S]+?)~~|<u>([\s\S]*?)<\/u>|(?<!\*)\*([^*\n]+?)\*(?!\*)|(?<![A-Za-z0-9])_([^_\n]+?)_(?![A-Za-z0-9]))/;
-
-        const match = emphasisRegex.exec(text);
-        if (!match) {
-            return this.renderLeafWithProtectedTokens(text, ctx, protectedTokens);
-        }
-
-        const before = text.slice(0, match.index);
-        const fullMatch = match[0];
-        const after = text.slice(match.index + fullMatch.length);
-
-        let xml = "";
-        if (before) {
-            xml += this.renderLeafWithProtectedTokens(before, ctx, protectedTokens);
-        }
-
-        if (match[2] !== undefined) {
-            // ***bold+italic***
-            xml += this.renderInlineRecursive(match[2], { ...ctx, bold: true, italic: true }, protectedTokens);
-        } else if (match[3] !== undefined) {
-            // **bold**
-            xml += this.renderInlineRecursive(match[3], { ...ctx, bold: true }, protectedTokens);
-        } else if (match[4] !== undefined) {
-            // __bold__
-            xml += this.renderInlineRecursive(match[4], { ...ctx, bold: true }, protectedTokens);
-        } else if (match[5] !== undefined) {
-            // ~~strike~~
-            xml += this.renderInlineRecursive(match[5], { ...ctx, strike: true }, protectedTokens);
-        } else if (match[6] !== undefined) {
-            // <u>underline</u>
-            xml += this.renderInlineRecursive(match[6], { ...ctx, underline: true }, protectedTokens);
-        } else if (match[7] !== undefined) {
-            // *italic*
-            xml += this.renderInlineRecursive(match[7], { ...ctx, italic: true }, protectedTokens);
-        } else if (match[8] !== undefined) {
-            // _italic_
-            xml += this.renderInlineRecursive(match[8], { ...ctx, italic: true }, protectedTokens);
-        }
-
-        if (after) {
-            xml += this.renderInlineRecursive(after, ctx, protectedTokens);
-        }
-
-        return xml;
-    }
-
-    private renderLeafWithProtectedTokens(text: string, ctx: InlineStyleContext, protectedTokens: ProtectedInlineToken[]): string {
-        if (!text) {
-            return "";
-        }
-
-        const tokenRegex = /\u0000TOK_(\d+)_\u0000/g;
-        let lastIndex = 0;
-        let xml = "";
-
-        while (true) {
-            const match = tokenRegex.exec(text);
-            if (!match) {
-                break;
-            }
-
-            if (match.index > lastIndex) {
-                const plainSlice = text.slice(lastIndex, match.index);
-                xml += this.createRunXml(plainSlice, this.resolveCharPrId(ctx));
-            }
-
-            const tokIndex = parseInt(match[1], 10);
-            const tok = protectedTokens[tokIndex];
-            if (tok) {
-                xml += this.renderProtectedToken(tok, ctx);
-            }
-
-            lastIndex = match.index + match[0].length;
-        }
-
-        if (lastIndex < text.length) {
-            const remaining = text.slice(lastIndex);
-            xml += this.createRunXml(remaining, this.resolveCharPrId(ctx));
-        }
-
-        return xml;
-    }
-
-    private renderProtectedToken(tok: ProtectedInlineToken, ctx: InlineStyleContext): string {
-        switch (tok.kind) {
-            case "CODE": {
-                const codeText = this.decodeHtmlEntities(tok.text ?? "");
-                return this.createRunXml(codeText, this.resolveCharPrId(ctx));
-            }
-            case "IMAGE": {
-                const altText = tok.label || "image";
-                const source = tok.href || "";
-                const imageText = source ? `[Image] ${altText} (${source})` : `[Image] ${altText}`;
-                return this.createRunXml(imageText, this.resolveCharPrId(ctx));
-            }
-            case "FOOTNOTE": {
-                const fnId = tok.label ?? "";
-                const { index, target } = this.registerFootnoteReference(fnId);
-                this.registerLinkObject(target, "REF");
-                const fnCtx: InlineStyleContext = { ...ctx, underline: true, supscript: true };
-                const fnRunXml = this.createRunXml(`[${index}]`, this.resolveCharPrId(fnCtx));
-                return this.wrapWithBookmarkHyperlinkField(`ref_${index}`, fnRunXml);
-            }
-            case "LINK": {
-                const label = tok.label ?? "";
-                const href = tok.href ?? "";
-                if (label.startsWith("^") && href) {
-                    const { index, target } = this.registerFootnoteReference(label.slice(1), href);
-                    this.registerLinkObject(target, "REF");
-                    const fnCtx: InlineStyleContext = { ...ctx, underline: true, supscript: true };
-                    const fnRunXml = this.createRunXml(`[${index}]`, this.resolveCharPrId(fnCtx));
-                    return this.wrapWithBookmarkHyperlinkField(`ref_${index}`, fnRunXml);
-                }
-                const visibleText = href && (!label || label === href) ? href : label || href;
-                if (href) {
-                    this.registerLinkObject(href, "WEB");
-                }
-                const innerRuns = this.parseInlineToRuns(visibleText, this.resolveCharPrId({ ...ctx, underline: true }));
-                if (/^https?:\/\//i.test(href)) {
-                    return this.wrapWithWebHyperlinkField(href, innerRuns);
-                }
-                if (href.startsWith("#")) {
-                    return this.wrapWithBookmarkHyperlinkField(href.slice(1), innerRuns);
-                }
-                return innerRuns;
-            }
-            case "RAW_URL": {
-                const href = tok.href ?? tok.text ?? "";
-                if (href) {
-                    this.registerLinkObject(href, "WEB");
-                }
-                const urlCtx: InlineStyleContext = { ...ctx, underline: true };
-                const urlRunXml = this.createRunXml(href, this.resolveCharPrId(urlCtx));
-                return this.wrapWithWebHyperlinkField(href, urlRunXml);
-            }
-            case "MATH": {
-                return this.renderLatexMathToRuns(tok.text ?? "", ctx);
-            }
-        }
     }
 
     private renderLatexMathToRuns(mathText: string, ctx: InlineStyleContext): string {
@@ -1705,7 +1501,7 @@ export class HwpxXmlRenderer {
     }
 
     private escapeXmlText(text: string): string {
-        return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        return stripKoreanSentinels(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     }
 
     private createCaptionXml(captionText: string, side: "TOP" | "BOTTOM", width: number): string {
@@ -1747,19 +1543,28 @@ export class HwpxXmlRenderer {
             const defaultCellStyleId = isHeaderRow ? this.styleIds.bold : undefined;
 
             for (let colIndex = 0; colIndex < colCount; colIndex++) {
+                const cellWidth = widths[colIndex] ?? widths[widths.length - 1];
                 const rawCellText = row[colIndex] ?? "";
-                const distributedCellText = this.distributeEmphasisAcrossLineBreaks(rawCellText);
-                const cellLines = distributedCellText
-                    .split(/<\/?br\s*\/?>|\n/gi)
-                    .map((line) => line.trim())
-                    .filter((line) => line.length > 0);
+                const cellLineGroups = splitInlineTokensIntoLines(
+                    lexInlineMarkdown(preprocessKoreanBoundaries(rawCellText)),
+                    { splitBr: true, splitNewlines: true },
+                );
+                const nonEmptyLines = cellLineGroups.filter((lineToks) =>
+                    lineToks.some((t) => t.type !== "text" || stripKoreanSentinels(t.text ?? t.raw ?? "").trim().length > 0),
+                );
 
-                const effectiveLines = cellLines.length > 0 ? cellLines : [""];
+                const effectiveLines = nonEmptyLines.length > 0 ? nonEmptyLines : [[]];
                 const cellParagraphsXml = effectiveLines
-                    .map((line) => this.createParagraphTag(this.parseInlineToRuns(line, defaultCellStyleId), this.paraPrIds.center))
+                    .map((lineToks) =>
+                        this.createParagraphTag(
+                            lineToks.length > 0
+                                ? this.renderInlineTokens(lineToks, { baseCharPrId: defaultCellStyleId ?? 0 }, Math.max(2000, cellWidth - 560))
+                                : this.createRunXml("", defaultCellStyleId),
+                            this.paraPrIds.center,
+                        ),
+                    )
                     .join("");
 
-                const cellWidth = widths[colIndex] ?? widths[widths.length - 1];
                 const cellHeight = 1800 * Math.max(1, effectiveLines.length);
 
                 xml += `<hp:tc name="" header="${isHeaderRow ? 1 : 0}" hasMargin="1" protect="0" editable="0" dirty="0" borderFillIDRef="${cellBorderFillId}">`;
