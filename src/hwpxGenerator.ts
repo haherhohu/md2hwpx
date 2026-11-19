@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { HwpxXmlRenderer } from "./hwpxXmlRenderer";
 import { MarkdownPipeline } from "./markdownPipeline";
+import { HwpxLayout } from "./hwpxConstants";
 import { EmbeddedImageItem } from "./types";
 
 export class HwpxGenerator {
@@ -81,12 +82,12 @@ export class HwpxGenerator {
                 const right = parseInt(marginAttrs.match(/\bright="(\d+)"/)?.[1] ?? "0", 10);
                 const gutter = parseInt(marginAttrs.match(/\bgutter="(\d+)"/)?.[1] ?? "0", 10);
                 const computed = pageWidth - left - right - gutter;
-                if (computed > 10000) {
+                if (computed > HwpxLayout.MIN_CONTENT_WIDTH) {
                     return computed;
                 }
             }
         }
-        return 42520;
+        return HwpxLayout.DEFAULT_CONTENT_WIDTH;
     }
 
     private buildCleanSectionXml(sectionXml: string, hwpxXmlContent: string): string {

@@ -1,5 +1,6 @@
 import { FootnoteDefinition, MarkdownToken, TableCellToken } from "./types";
-import { asTokenArray } from "./tokenUtils";
+import { asTokenArray, getTokenText } from "./tokenUtils";
+import { decodeHtmlEntities } from "./hwpxConstants";
 import { lexInlineMarkdown, lexMarkdown } from "./pipeline/markdownExtensions";
 import { preprocessKoreanBoundaries, stripKoreanSentinels } from "./pipeline/koreanPreprocessor";
 
@@ -230,7 +231,7 @@ export class MarkdownPipeline {
         }
 
         if ((token.type === "html" || token.type === "paragraph") && this.isSvgMarkup(token)) {
-            const rawText = this.getTokenText(token);
+            const rawText = getTokenText(token);
             return [
                 {
                     type: "image",
@@ -311,7 +312,7 @@ export class MarkdownPipeline {
         }
 
         const isChildUnquoted = (child: MarkdownToken, seenTable: boolean): boolean => {
-            const childFirstLine = this.getTokenText(child)
+            const childFirstLine = getTokenText(child)
                 .split(/\r?\n/)
                 .map((l) => l.trim())
                 .find((l) => l.length > 0);
@@ -325,7 +326,8 @@ export class MarkdownPipeline {
             return false;
         };
 
-        if ((startsWithMarkdownTable || containsHtmlTable) && hasTable) {
+        const shouldSplitTables = (startsWithMarkdownTable || containsHtmlTable) && hasTable;
+        if (shouldSplitTables || unquotedRawLines.size > 0) {
             const result: MarkdownToken[] = [];
             let quoteBuffer: MarkdownToken[] = [];
             let seenTable = false;
@@ -339,36 +341,11 @@ export class MarkdownPipeline {
             };
 
             for (const child of normalizedChildren) {
-                if (child.type === "table") {
+                if (shouldSplitTables && child.type === "table") {
                     flushQuoteBuffer();
                     seenTable = true;
                     result.push(child);
-                } else if (child.type !== "space" && isChildUnquoted(child, seenTable)) {
-                    flushQuoteBuffer();
-                    result.push(child);
-                } else {
-                    quoteBuffer.push(child);
-                }
-            }
-            flushQuoteBuffer();
-            return result;
-        }
-
-        // Also separate any unquoted lazy-continuation trailing blocks outside normal blockquotes
-        if (unquotedRawLines.size > 0) {
-            const result: MarkdownToken[] = [];
-            let quoteBuffer: MarkdownToken[] = [];
-
-            const flushQuoteBuffer = () => {
-                const nonSpaceQuotes = quoteBuffer.filter((q) => q.type !== "space");
-                if (nonSpaceQuotes.length > 0) {
-                    result.push({ ...token, tokens: quoteBuffer });
-                }
-                quoteBuffer = [];
-            };
-
-            for (const child of normalizedChildren) {
-                if (child.type !== "space" && isChildUnquoted(child, false)) {
+                } else if (child.type !== "space" && isChildUnquoted(child, shouldSplitTables && seenTable)) {
                     flushQuoteBuffer();
                     result.push(child);
                 } else {
@@ -466,9 +443,7 @@ export class MarkdownPipeline {
         if (!token || (token.type !== "paragraph" && token.type !== "html" && token.type !== "heading")) {
             return undefined;
         }
-        const rawText = stripKoreanSentinels(
-            typeof token.text === "string" ? token.text : typeof token.raw === "string" ? token.raw : "",
-        ).trim();
+        const rawText = stripKoreanSentinels(getTokenText(token)).trim();
         if (!rawText || /\r?\n/.test(rawText)) {
             return undefined;
         }
@@ -615,22 +590,12 @@ export class MarkdownPipeline {
             return false;
         }
 
-        const htmlContent = typeof token.text === "string" ? token.text : typeof token.raw === "string" ? token.raw : "";
+        const htmlContent = getTokenText(token);
         return /<table[\s\S]*?>/i.test(htmlContent);
     }
 
-    private getTokenText(token: MarkdownToken): string {
-        if (typeof token.text === "string") {
-            return token.text;
-        }
-        if (typeof token.raw === "string") {
-            return token.raw;
-        }
-        return "";
-    }
-
     private isSvgMarkup(token: MarkdownToken): boolean {
-        const htmlContent = this.getTokenText(token);
+        const htmlContent = getTokenText(token);
         return /<svg\b[\s\S]*<\/svg>|<svg\b[^>]*\/>/i.test(htmlContent) || /<svg\b/i.test(htmlContent);
     }
 
@@ -639,7 +604,7 @@ export class MarkdownPipeline {
             return [token];
         }
 
-        const htmlContent = typeof token.text === "string" ? token.text : typeof token.raw === "string" ? token.raw : "";
+        const htmlContent = getTokenText(token);
         if (!/<table[\s\S]*?>/i.test(htmlContent)) {
             return [token];
         }
@@ -701,17 +666,7 @@ export class MarkdownPipeline {
             .replace(/\u0000U_OPEN\u0000/g, "<u>")
             .replace(/\u0000U_CLOSE\u0000/g, "</u>");
 
-        return withoutTags.replace(/&(nbsp|amp|lt|gt|quot|apos);/gi, (full, entityName: string) => {
-            const map: Record<string, string> = {
-                nbsp: " ",
-                amp: "&",
-                lt: "<",
-                gt: ">",
-                quot: '"',
-                apos: "'",
-            };
-            return map[entityName.toLowerCase()] ?? full;
-        });
+        return decodeHtmlEntities(withoutTags);
     }
 
     private removeHtmlTags(text: string): string {

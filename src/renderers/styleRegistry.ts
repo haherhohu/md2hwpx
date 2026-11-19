@@ -1,4 +1,5 @@
 import { InlineStyleContext } from "../types";
+import { HwpxNs, HwpxStyles } from "../hwpxConstants";
 
 export interface StyleIds {
     bold: number;
@@ -116,15 +117,23 @@ export class StyleRegistry {
         const setHeight = (attrStr: string, height: string) =>
             attrStr.includes("height=") ? attrStr.replace(/height="\d+"/, `height="${height}"`) : attrStr + ` height="${height}"`;
 
+        const headingXml = (
+            [
+                [this.styleIds.h1, HwpxStyles.HEADING_HEIGHTS.h1],
+                [this.styleIds.h2, HwpxStyles.HEADING_HEIGHTS.h2],
+                [this.styleIds.h3, HwpxStyles.HEADING_HEIGHTS.h3],
+                [this.styleIds.h4, HwpxStyles.HEADING_HEIGHTS.h4],
+                [this.styleIds.h5, HwpxStyles.HEADING_HEIGHTS.h5],
+                [this.styleIds.h6, HwpxStyles.HEADING_HEIGHTS.h6],
+            ] as const
+        )
+            .map(([id, height]) => `<${ns}:charPr id="${id}" ${setHeight(attrs, height)}>${inner}<${ns}:bold>1</${ns}:bold></${ns}:charPr>`)
+            .join("\n                    ");
+
         const customStyles = `
                     <${ns}:charPr id="${this.styleIds.bold}" ${attrs}>${inner}<${ns}:bold>1</${ns}:bold></${ns}:charPr>
                     <${ns}:charPr id="${this.styleIds.ul}" ${attrs}>${inner}<${ns}:underline type="bottom" shape="solid" color="000000"/></${ns}:charPr>
-                    <${ns}:charPr id="${this.styleIds.h1}" ${setHeight(attrs, "1600")}>${inner}<${ns}:bold>1</${ns}:bold></${ns}:charPr>
-                    <${ns}:charPr id="${this.styleIds.h2}" ${setHeight(attrs, "1400")}>${inner}<${ns}:bold>1</${ns}:bold></${ns}:charPr>
-                    <${ns}:charPr id="${this.styleIds.h3}" ${setHeight(attrs, "1200")}>${inner}<${ns}:bold>1</${ns}:bold></${ns}:charPr>
-                    <${ns}:charPr id="${this.styleIds.h4}" ${setHeight(attrs, "1200")}>${inner}<${ns}:bold>1</${ns}:bold></${ns}:charPr>
-                    <${ns}:charPr id="${this.styleIds.h5}" ${setHeight(attrs, "1200")}>${inner}<${ns}:bold>1</${ns}:bold></${ns}:charPr>
-                    <${ns}:charPr id="${this.styleIds.h6}" ${setHeight(attrs, "1200")}>${inner}<${ns}:bold>1</${ns}:bold></${ns}:charPr>
+                    ${headingXml}
                     `;
 
         return updatedHeader.replace(new RegExp(`</${ns}:charProperties>`), `${customStyles}</${ns}:charProperties>`);
@@ -273,6 +282,26 @@ export class StyleRegistry {
         }
     }
 
+    private buildBorderFillXml(id: number, fillColor?: string): string {
+        const w = HwpxStyles.BORDER_WIDTH;
+        const c = HwpxStyles.BORDER_COLOR;
+        const fillXml = fillColor
+            ? `<hc:fillBrush><hc:winBrush faceColor="${fillColor}" hatchColor="${c}" alpha="0"/></hc:fillBrush>`
+            : "";
+        return (
+            `<hh:borderFill id="${id}" threeD="0" shadow="0" centerLine="NONE" breakCellSeparateLine="0">` +
+            `<hh:slash type="NONE" Crooked="0" isCounter="0"/>` +
+            `<hh:backSlash type="NONE" Crooked="0" isCounter="0"/>` +
+            `<hh:leftBorder type="SOLID" width="${w}" color="${c}"/>` +
+            `<hh:rightBorder type="SOLID" width="${w}" color="${c}"/>` +
+            `<hh:topBorder type="SOLID" width="${w}" color="${c}"/>` +
+            `<hh:bottomBorder type="SOLID" width="${w}" color="${c}"/>` +
+            `<hh:diagonal type="SOLID" width="0.1 mm" color="${c}"/>` +
+            fillXml +
+            `</hh:borderFill>`
+        );
+    }
+
     private injectBorderFillToHeader(headerXmlString: string): string {
         let maxBorderId = 2;
         for (const m of headerXmlString.matchAll(/<hh:borderFill\s+id="(\d+)"/g)) {
@@ -288,37 +317,11 @@ export class StyleRegistry {
             callout: maxBorderId + 3,
         };
 
-        const newBorderFills = `
-            <hh:borderFill id="${this.borderFillIds.table}" threeD="0" shadow="0" centerLine="NONE" breakCellSeparateLine="0">
-                <hh:slash type="NONE" Crooked="0" isCounter="0"/>
-                <hh:backSlash type="NONE" Crooked="0" isCounter="0"/>
-                <hh:leftBorder type="SOLID" width="0.12 mm" color="#000000"/>
-                <hh:rightBorder type="SOLID" width="0.12 mm" color="#000000"/>
-                <hh:topBorder type="SOLID" width="0.12 mm" color="#000000"/>
-                <hh:bottomBorder type="SOLID" width="0.12 mm" color="#000000"/>
-                <hh:diagonal type="SOLID" width="0.1 mm" color="#000000"/>
-            </hh:borderFill>
-            <hh:borderFill id="${this.borderFillIds.tableHeader}" threeD="0" shadow="0" centerLine="NONE" breakCellSeparateLine="0">
-                <hh:slash type="NONE" Crooked="0" isCounter="0"/>
-                <hh:backSlash type="NONE" Crooked="0" isCounter="0"/>
-                <hh:leftBorder type="SOLID" width="0.12 mm" color="#000000"/>
-                <hh:rightBorder type="SOLID" width="0.12 mm" color="#000000"/>
-                <hh:topBorder type="SOLID" width="0.12 mm" color="#000000"/>
-                <hh:bottomBorder type="SOLID" width="0.12 mm" color="#000000"/>
-                <hh:diagonal type="SOLID" width="0.1 mm" color="#000000"/>
-                <hc:fillBrush><hc:winBrush faceColor="#E5E5E5" hatchColor="#000000" alpha="0"/></hc:fillBrush>
-            </hh:borderFill>
-            <hh:borderFill id="${this.borderFillIds.callout}" threeD="0" shadow="0" centerLine="NONE" breakCellSeparateLine="0">
-                <hh:slash type="NONE" Crooked="0" isCounter="0"/>
-                <hh:backSlash type="NONE" Crooked="0" isCounter="0"/>
-                <hh:leftBorder type="SOLID" width="0.12 mm" color="#000000"/>
-                <hh:rightBorder type="SOLID" width="0.12 mm" color="#000000"/>
-                <hh:topBorder type="SOLID" width="0.12 mm" color="#000000"/>
-                <hh:bottomBorder type="SOLID" width="0.12 mm" color="#000000"/>
-                <hh:diagonal type="SOLID" width="0.1 mm" color="#000000"/>
-                <hc:fillBrush><hc:winBrush faceColor="#F9F9F9" hatchColor="#000000" alpha="0"/></hc:fillBrush>
-            </hh:borderFill>
-        `;
+        const newBorderFills = [
+            this.buildBorderFillXml(this.borderFillIds.table),
+            this.buildBorderFillXml(this.borderFillIds.tableHeader, HwpxStyles.TABLE_HEADER_BG),
+            this.buildBorderFillXml(this.borderFillIds.callout, HwpxStyles.CALLOUT_BG),
+        ].join("");
 
         let updatedXml = headerXmlString.replace(/(<hh:borderFills[^>]*?itemCnt=")(\d+)(")/, (_match, prefix, currentCnt, suffix) => {
             const newCnt = parseInt(currentCnt, 10) + 3;
@@ -379,8 +382,8 @@ export class StyleRegistry {
         const makeMarginXml = (left: number, intent: number) =>
             `<hh:margin><hc:intent value="${intent}" unit="HWPUNIT"/><hc:left value="${left}" unit="HWPUNIT"/><hc:right value="0" unit="HWPUNIT"/><hc:prev value="0" unit="HWPUNIT"/><hc:next value="0" unit="HWPUNIT"/></hh:margin>`;
 
-        const setHangingMargin = (xmlStr: string, leftMargin: number, indentVal = -1200) => {
-            if (/<hp:case\b[^>]*HwpUnitChar[^>]*>[\s\S]*?<\/hp:case>/.test(xmlStr) && /<hp:default>[\s\S]*?<\/hp:default>/.test(xmlStr)) {
+        const setHangingMargin = (xmlStr: string, leftMargin: number, indentVal: number = HwpxStyles.LIST_HANGING_INDENT) => {
+            if (xmlStr.includes(HwpxNs.HWP_UNIT_CHAR) && /<hp:default>[\s\S]*?<\/hp:default>/.test(xmlStr)) {
                 return xmlStr
                     .replace(
                         /(<hp:case\b[^>]*HwpUnitChar[^>]*>[\s\S]*?)<hh:margin[^>]*>[\s\S]*?<\/hh:margin>([\s\S]*?<\/hp:case>)/,
@@ -408,16 +411,26 @@ export class StyleRegistry {
                 .replace(/breakLatinWord="[^"]*"/g, `breakLatinWord="BREAK_WORD"`)
                 .replace(/breakNonLatinWord="[^"]*"/g, `breakNonLatinWord="BREAK_WORD"`),
             0,
-            -2200,
+            HwpxStyles.ENDNOTE_HANGING_INDENT,
         );
 
+        const levelIds = [
+            this.paraPrIds.level1,
+            this.paraPrIds.level2,
+            this.paraPrIds.level3,
+            this.paraPrIds.level4,
+            this.paraPrIds.level5,
+            this.paraPrIds.level6,
+        ];
+        const levelParaPrs = levelIds
+            .map(
+                (id, idx) =>
+                    `<hh:paraPr id="${id}"${normalizedAttrs}>${setHangingMargin(inner, HwpxStyles.LIST_LEVEL_STEP * (idx + 1))}</hh:paraPr>`,
+            )
+            .join("\n                    ");
+
         const customParaPrs = `
-                    <hh:paraPr id="${this.paraPrIds.level1}"${normalizedAttrs}>${setHangingMargin(inner, 1200)}</hh:paraPr>
-                    <hh:paraPr id="${this.paraPrIds.level2}"${normalizedAttrs}>${setHangingMargin(inner, 2400)}</hh:paraPr>
-                    <hh:paraPr id="${this.paraPrIds.level3}"${normalizedAttrs}>${setHangingMargin(inner, 3600)}</hh:paraPr>
-                    <hh:paraPr id="${this.paraPrIds.level4}"${normalizedAttrs}>${setHangingMargin(inner, 4800)}</hh:paraPr>
-                    <hh:paraPr id="${this.paraPrIds.level5}"${normalizedAttrs}>${setHangingMargin(inner, 6000)}</hh:paraPr>
-                    <hh:paraPr id="${this.paraPrIds.level6}"${normalizedAttrs}>${setHangingMargin(inner, 7200)}</hh:paraPr>
+                    ${levelParaPrs}
                     <hh:paraPr id="${this.paraPrIds.center}"${normalizedAttrs}>${centerInner}</hh:paraPr>
                     <hh:paraPr id="${this.paraPrIds.left}"${normalizedAttrs}>${leftInner}</hh:paraPr>
                     <hh:paraPr id="${this.paraPrIds.right}"${normalizedAttrs}>${rightInner}</hh:paraPr>

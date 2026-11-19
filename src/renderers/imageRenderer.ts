@@ -4,6 +4,7 @@ import * as path from "path";
 import { initWasm, Resvg } from "@resvg/resvg-wasm";
 import { EmbeddedImageItem, MarkdownToken } from "../types";
 import { extractImageDimensions } from "../image/imageSizeParser";
+import { escapeXmlText, HwpxLayout, SvgHtmlEntityMap } from "../hwpxConstants";
 
 interface ImageMetadata {
     width: number;
@@ -17,7 +18,6 @@ export interface ImageRendererCallbacks {
     getCenterParaPrId: () => number;
     createParagraphTag: (runXml: string, paraPrId?: number, pageBreak?: number, styleId?: number) => string;
     createCaptionXml: (captionText: string, side: "TOP" | "BOTTOM", width: number) => string;
-    escapeXmlText: (text: string) => string;
 }
 
 // 1x1 solid white PNG fallback buffer
@@ -25,8 +25,6 @@ const FALLBACK_PNG_BUFFER = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=",
     "base64",
 );
-
-const MAX_IMAGE_PAGE_HEIGHT = 56000;
 
 export class ImageRenderer {
     private static wasmInitialized = false;
@@ -104,9 +102,9 @@ export class ImageRenderer {
         const instId = this.callbacks.generateHwpId();
 
         const maxW = Math.max(1000, maxContainerWidth ?? this.callbacks.getContentWidth());
-        const maxH = MAX_IMAGE_PAGE_HEIGHT;
+        const maxH = HwpxLayout.MAX_IMAGE_PAGE_HEIGHT;
         const meta = this.imageMetadataMap.get(binaryId);
-        const hwpPerPx = meta ? 7200 / meta.dpi : 75;
+        const hwpPerPx = meta ? HwpxLayout.HWPUNIT_PER_INCH / meta.dpi : HwpxLayout.HWPUNIT_PER_INCH / HwpxLayout.DEFAULT_DPI;
 
         const naturalWidth = meta ? Math.max(1, Math.round(meta.width * hwpPerPx)) : maxW;
         const naturalHeight = meta ? Math.max(1, Math.round(meta.height * hwpPerPx)) : Math.round((maxW * 9) / 16);
@@ -114,8 +112,9 @@ export class ImageRenderer {
 
         const width = Math.max(1000, Math.round(naturalWidth * scale));
         const height = Math.max(1000, Math.round(naturalHeight * scale));
-        const dimWidth = meta ? Math.max(1, Math.round(meta.width * 75)) : width;
-        const dimHeight = meta ? Math.max(1, Math.round(meta.height * 75)) : height;
+        const defaultHwpPerPx = HwpxLayout.HWPUNIT_PER_INCH / HwpxLayout.DEFAULT_DPI;
+        const dimWidth = meta ? Math.max(1, Math.round(meta.width * defaultHwpPerPx)) : width;
+        const dimHeight = meta ? Math.max(1, Math.round(meta.height * defaultHwpPerPx)) : height;
         const scaleX = (width / naturalWidth).toFixed(6);
         const scaleY = (height / naturalHeight).toFixed(6);
 
@@ -151,7 +150,7 @@ export class ImageRenderer {
             `<hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>` +
             `<hp:outMargin left="0" right="0" top="0" bottom="0"/>` +
             captionXml +
-            `<hp:shapeComment>${this.callbacks.escapeXmlText(captionComment)}</hp:shapeComment>` +
+            `<hp:shapeComment>${escapeXmlText(captionComment)}</hp:shapeComment>` +
             `</hp:pic>` +
             `<hp:t/>` +
             `</hp:run>`
@@ -168,7 +167,7 @@ export class ImageRenderer {
             }
 
             const normalizedSvg = this.normalizeSvgString(inlineSvgContent);
-            const pngBuffer = this.convertSvgToPngBuffer(normalizedSvg, 300);
+            const pngBuffer = this.convertSvgToPngBuffer(normalizedSvg, HwpxLayout.SVG_RENDER_DPI);
             const idx = this.embeddedImages.length + 1;
             const id = `mdimg_${idx}`;
             const filename = `${id}.png`;
@@ -180,10 +179,10 @@ export class ImageRenderer {
             });
             const parsedDims = extractImageDimensions(pngBuffer);
             if (parsedDims && pngBuffer !== FALLBACK_PNG_BUFFER) {
-                this.imageMetadataMap.set(id, { ...parsedDims, dpi: 300 });
+                this.imageMetadataMap.set(id, { ...parsedDims, dpi: HwpxLayout.SVG_RENDER_DPI });
             } else {
                 const svgDims = this.extractSvgDimensions(normalizedSvg);
-                this.imageMetadataMap.set(id, { ...svgDims, dpi: 96 });
+                this.imageMetadataMap.set(id, { ...svgDims, dpi: HwpxLayout.DEFAULT_DPI });
             }
             this.imageDedupeMap.set(dedupeKey, id);
             return id;
@@ -210,7 +209,7 @@ export class ImageRenderer {
                 mimeType = "image/png";
                 const rawSvg = fs.readFileSync(resolvedFile, "utf-8");
                 const normalizedSvg = this.normalizeSvgString(rawSvg);
-                data = this.convertSvgToPngBuffer(normalizedSvg, 300);
+                data = this.convertSvgToPngBuffer(normalizedSvg, HwpxLayout.SVG_RENDER_DPI);
                 isSvgDerived = true;
             } else if (sourceExt === ".jpg" || sourceExt === ".jpeg") {
                 ext = ".jpg";
@@ -231,14 +230,17 @@ export class ImageRenderer {
             ext = ".png";
             mimeType = "image/png";
             const placeholderSvg = this.createPlaceholderSvg(source);
-            data = this.convertSvgToPngBuffer(placeholderSvg, 300);
+            data = this.convertSvgToPngBuffer(placeholderSvg, HwpxLayout.SVG_RENDER_DPI);
             isSvgDerived = true;
         }
 
         if (data !== FALLBACK_PNG_BUFFER) {
             const parsedDims = extractImageDimensions(data);
             if (parsedDims) {
-                this.imageMetadataMap.set(id, { ...parsedDims, dpi: isSvgDerived ? 300 : 96 });
+                this.imageMetadataMap.set(id, {
+                    ...parsedDims,
+                    dpi: isSvgDerived ? HwpxLayout.SVG_RENDER_DPI : HwpxLayout.DEFAULT_DPI,
+                });
             }
         }
 
@@ -394,61 +396,11 @@ export class ImageRenderer {
         const svgMatch = svgContent.match(/<svg\b[\s\S]*<\/svg>|<svg\b[^>]*\/>/i);
         let normalizedSvg = svgMatch ? svgMatch[0] : svgContent.trim();
 
-        const htmlEntities: Record<string, string> = {
-            nbsp: "&#160;",
-            copy: "&#169;",
-            reg: "&#174;",
-            trade: "&#8482;",
-            ndash: "&#8211;",
-            mdash: "&#8212;",
-            lsquo: "&#8216;",
-            rsquo: "&#8217;",
-            ldquo: "&#8220;",
-            rdquo: "&#8221;",
-            bull: "&#8226;",
-            hellip: "&#8230;",
-            rarr: "&#8594;",
-            larr: "&#8592;",
-            uarr: "&#8593;",
-            darr: "&#8595;",
-            harr: "&#8596;",
-            rArr: "&#8658;",
-            lArr: "&#8656;",
-            hArr: "&#8660;",
-            times: "&#215;",
-            divide: "&#247;",
-            plusmn: "&#177;",
-            minus: "&#8722;",
-            le: "&#8804;",
-            ge: "&#8805;",
-            ne: "&#8800;",
-            asymp: "&#8776;",
-            equiv: "&#8801;",
-            sim: "&#8764;",
-            deg: "&#176;",
-            middot: "&#183;",
-            alpha: "&#945;",
-            beta: "&#946;",
-            gamma: "&#947;",
-            delta: "&#948;",
-            epsilon: "&#949;",
-            theta: "&#952;",
-            lambda: "&#955;",
-            mu: "&#956;",
-            pi: "&#960;",
-            sigma: "&#963;",
-            tau: "&#964;",
-            phi: "&#966;",
-            omega: "&#969;",
-            Delta: "&#916;",
-            Sigma: "&#931;",
-            Omega: "&#937;",
-        };
         normalizedSvg = normalizedSvg.replace(/&([a-zA-Z]+);/g, (full, name: string) => {
             if (name === "amp" || name === "lt" || name === "gt" || name === "quot" || name === "apos") {
                 return full;
             }
-            return htmlEntities[name] ?? full;
+            return SvgHtmlEntityMap[name] ?? full;
         });
 
         normalizedSvg = normalizedSvg.replace(/&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)/g, "&amp;");
@@ -564,7 +516,7 @@ export class ImageRenderer {
     }
 
     private createPlaceholderSvg(source: string): string {
-        const safeLabel = this.callbacks.escapeXmlText(path.basename(source));
+        const safeLabel = escapeXmlText(path.basename(source));
         return (
             `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 450" width="800" height="450">` +
             `<rect width="800" height="450" fill="#f8fafc" stroke="#94a3b8" stroke-width="2" rx="8"/>` +

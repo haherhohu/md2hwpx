@@ -1,5 +1,6 @@
 import { InlineStyleContext, MarkdownToken, TableCellToken } from "../types";
-import { asTokenArray } from "../tokenUtils";
+import { asTokenArray, getTokenText, hasVisibleInlineContent } from "../tokenUtils";
+import { HwpxLayout } from "../hwpxConstants";
 import { lexInlineMarkdown } from "../pipeline/markdownExtensions";
 import { preprocessKoreanBoundaries, stripKoreanSentinels } from "../pipeline/koreanPreprocessor";
 import { splitInlineTokensIntoLines } from "./inlineRenderer";
@@ -29,7 +30,7 @@ export function normalizeCellToken(cell: unknown): TableCellToken {
     }
 
     const value = cell as { text?: unknown; raw?: unknown; tokens?: unknown };
-    const text = typeof value.text === "string" ? value.text : typeof value.raw === "string" ? value.raw : "";
+    const text = getTokenText(value as MarkdownToken);
     const tokens = asTokenArray(value.tokens);
     if (tokens.length > 0) {
         return { text, tokens };
@@ -62,14 +63,14 @@ function estimateInlineLineLength(tokens: MarkdownToken[]): number {
                 break;
             case "codespan":
             case "escape":
-                length += stripKoreanSentinels(token.text ?? token.raw ?? "").length;
+                length += stripKoreanSentinels(getTokenText(token)).length;
                 break;
             default: {
                 const nested = asTokenArray(token.tokens);
                 if (nested.length > 0) {
                     length += estimateInlineLineLength(nested);
                 } else {
-                    length += stripKoreanSentinels(token.text ?? token.raw ?? "").length;
+                    length += stripKoreanSentinels(getTokenText(token)).length;
                 }
                 break;
             }
@@ -108,19 +109,28 @@ function trimEdgeWhitespaceTokens(tokens: MarkdownToken[]): MarkdownToken[] {
     const result = tokens.map((t) => ({ ...t }));
     const first = result[0];
     if (first.type === "text" && !Array.isArray(first.tokens)) {
-        const textVal = typeof first.text === "string" ? first.text : typeof first.raw === "string" ? first.raw : "";
-        const trimmedStart = textVal.replace(/^[ \t]+/, "");
+        const trimmedStart = getTokenText(first).replace(/^[ \t]+/, "");
         first.text = trimmedStart;
         first.raw = trimmedStart;
     }
     const last = result[result.length - 1];
     if (last.type === "text" && !Array.isArray(last.tokens)) {
-        const textVal = typeof last.text === "string" ? last.text : typeof last.raw === "string" ? last.raw : "";
-        const trimmedEnd = textVal.replace(/[ \t]+$/, "");
+        const trimmedEnd = getTokenText(last).replace(/[ \t]+$/, "");
         last.text = trimmedEnd;
         last.raw = trimmedEnd;
     }
-    return result.filter((t) => t.type !== "text" || Array.isArray(t.tokens) || (t.text ?? t.raw ?? "").length > 0);
+    return result.filter((t) => t.type !== "text" || Array.isArray(t.tokens) || getTokenText(t).length > 0);
+}
+
+interface TableShellOptions {
+    numberingType: "NONE" | "TABLE";
+    repeatHeader: 0 | 1;
+    rowCount: number;
+    colCount: number;
+    width: number;
+    borderFillId: number;
+    captionXml?: string;
+    bodyXml: string;
 }
 
 export class TableRenderer {
@@ -146,8 +156,23 @@ export class TableRenderer {
         return this.createTableXml(rows, containerWidth, align, token.caption, token.captionSide ?? "TOP");
     }
 
-    public renderCalloutXml(innerXml: string, containerWidth: number): string {
+    private wrapTableParagraph(options: TableShellOptions): string {
         const tableId = this.callbacks.generateHwpId();
+        const m = HwpxLayout.CELL_MARGIN;
+        const outY = HwpxLayout.TABLE_OUT_MARGIN_Y;
+        const xml =
+            `<hp:tbl id="${tableId}" zOrder="0" numberingType="${options.numberingType}" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" pageBreak="CELL" repeatHeader="${options.repeatHeader}" rowCnt="${options.rowCount}" colCnt="${options.colCount}" cellSpacing="0" borderFillIDRef="${options.borderFillId}" noAdjust="1">` +
+            `<hp:sz width="${options.width}" widthRelTo="ABSOLUTE" height="0" heightRelTo="ABSOLUTE" protect="0"/>` +
+            `<hp:pos treatAsChar="0" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>` +
+            `<hp:outMargin left="0" right="0" top="${outY}" bottom="${outY}"/>` +
+            `<hp:inMargin left="${m}" right="${m}" top="${m}" bottom="${m}"/>` +
+            (options.captionXml ?? "") +
+            options.bodyXml +
+            `</hp:tbl>`;
+        return this.callbacks.createParagraphTag(`<hp:run>${xml}<hp:t/></hp:run>`, 0);
+    }
+
+    public renderCalloutXml(innerXml: string, containerWidth: number): string {
         const totalTableWidth = Math.max(4000, containerWidth);
         const borderFillIds = this.callbacks.getBorderFillIds();
         const paraPrIds = this.callbacks.getParaPrIds();
@@ -155,23 +180,27 @@ export class TableRenderer {
             innerXml.trim().length > 0
                 ? innerXml
                 : this.callbacks.createParagraphTag(this.callbacks.createRunXml(""), paraPrIds.left);
+        const m = HwpxLayout.CELL_MARGIN;
+        const bodyXml =
+            `<hp:tr>` +
+            `<hp:tc name="" header="0" hasMargin="1" protect="0" editable="0" dirty="0" borderFillIDRef="${borderFillIds.callout}">` +
+            `<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">${safeInnerXml}</hp:subList>` +
+            `<hp:cellAddr colAddr="0" rowAddr="0"/>` +
+            `<hp:cellSpan colSpan="1" rowSpan="1"/>` +
+            `<hp:cellSz width="${totalTableWidth}" height="${HwpxLayout.DEFAULT_ROW_HEIGHT}"/>` +
+            `<hp:cellMargin left="${m}" right="${m}" top="${m}" bottom="${m}"/>` +
+            `</hp:tc>` +
+            `</hp:tr>`;
 
-        let xml = `<hp:tbl id="${tableId}" zOrder="0" numberingType="NONE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" pageBreak="CELL" repeatHeader="0" rowCnt="1" colCnt="1" cellSpacing="0" borderFillIDRef="${borderFillIds.callout}" noAdjust="1">`;
-        xml += `<hp:sz width="${totalTableWidth}" widthRelTo="ABSOLUTE" height="0" heightRelTo="ABSOLUTE" protect="0"/>`;
-        xml += `<hp:pos treatAsChar="0" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>`;
-        xml += `<hp:outMargin left="0" right="0" top="141" bottom="141"/>`;
-        xml += `<hp:inMargin left="280" right="280" top="280" bottom="280"/>`;
-        xml += `<hp:tr>`;
-        xml += `<hp:tc name="" header="0" hasMargin="1" protect="0" editable="0" dirty="0" borderFillIDRef="${borderFillIds.callout}">`;
-        xml += `<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">${safeInnerXml}</hp:subList>`;
-        xml += `<hp:cellAddr colAddr="0" rowAddr="0"/>`;
-        xml += `<hp:cellSpan colSpan="1" rowSpan="1"/>`;
-        xml += `<hp:cellSz width="${totalTableWidth}" height="1800"/>`;
-        xml += `<hp:cellMargin left="280" right="280" top="280" bottom="280"/>`;
-        xml += `</hp:tc>`;
-        xml += `</hp:tr>`;
-        xml += `</hp:tbl>`;
-        return this.callbacks.createParagraphTag(`<hp:run>${xml}<hp:t/></hp:run>`, 0);
+        return this.wrapTableParagraph({
+            numberingType: "NONE",
+            repeatHeader: 0,
+            rowCount: 1,
+            colCount: 1,
+            width: totalTableWidth,
+            borderFillId: borderFillIds.callout,
+            bodyXml,
+        });
     }
 
     private createTableXml(
@@ -182,7 +211,6 @@ export class TableRenderer {
         captionSide: "TOP" | "BOTTOM" = "TOP",
     ): string {
         const safeRows: TableCellToken[][] = rows.length > 0 ? rows : [[{ text: "", tokens: [] }]];
-        const tableId = this.callbacks.generateHwpId();
         const rowCount = safeRows.length;
         const columnMaxLengths = this.getColumnMaxLengths(safeRows);
         const colCount = columnMaxLengths.length;
@@ -191,21 +219,15 @@ export class TableRenderer {
         const borderFillIds = this.callbacks.getBorderFillIds();
         const paraPrIds = this.callbacks.getParaPrIds();
         const styleIds = this.callbacks.getStyleIds();
-
-        let xml = `<hp:tbl id="${tableId}" zOrder="0" numberingType="TABLE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" pageBreak="CELL" repeatHeader="1" rowCnt="${rowCount}" colCnt="${colCount}" cellSpacing="0" borderFillIDRef="${borderFillIds.table}" noAdjust="1">`;
-        xml += `<hp:sz width="${totalTableWidth}" widthRelTo="ABSOLUTE" height="0" heightRelTo="ABSOLUTE" protect="0"/>`;
-        xml += `<hp:pos treatAsChar="0" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>`;
-        xml += `<hp:outMargin left="0" right="0" top="141" bottom="141"/>`;
-        xml += `<hp:inMargin left="280" right="280" top="280" bottom="280"/>`;
-        if (captionText) {
-            xml += this.callbacks.createCaptionXml(captionText, captionSide, totalTableWidth);
-        }
+        const m = HwpxLayout.CELL_MARGIN;
+        const captionXml = captionText ? this.callbacks.createCaptionXml(captionText, captionSide, totalTableWidth) : "";
 
         const widths = this.calculateColumnWidths(columnMaxLengths, totalTableWidth);
         const mergedGrid = buildMergedTableGrid(safeRows, widths);
 
+        let bodyXml = "";
         mergedGrid.forEach((row) => {
-            xml += `<hp:tr>`;
+            bodyXml += `<hp:tr>`;
 
             for (const gridCell of row) {
                 if (gridCell.absorbed) {
@@ -229,14 +251,10 @@ export class TableRenderer {
                     splitNewlines: true,
                     splitExplicitBackslash: true,
                 }).map(trimEdgeWhitespaceTokens);
-                const nonEmptyLines = cellLineGroups.filter((lineToks) =>
-                    lineToks.some(
-                        (t) => t.type !== "text" || stripKoreanSentinels(t.text ?? t.raw ?? "").trim().length > 0,
-                    ),
-                );
+                const nonEmptyLines = cellLineGroups.filter(hasVisibleInlineContent);
 
                 const effectiveLines = nonEmptyLines.length > 0 ? nonEmptyLines : [[]];
-                const cellAvailableWidth = Math.max(2000, cellWidth - 560);
+                const cellAvailableWidth = Math.max(2000, cellWidth - HwpxLayout.CALLOUT_PADDING_X);
                 const colAlign = align[gridCell.col] ?? null;
                 const cellParaPrId = isHeaderRow
                     ? colAlign === "left"
@@ -264,22 +282,30 @@ export class TableRenderer {
                     )
                     .join("");
 
-                const cellHeight = 1800 * Math.max(1, effectiveLines.length, gridCell.rowSpan);
+                const cellHeight = HwpxLayout.DEFAULT_ROW_HEIGHT * Math.max(1, effectiveLines.length, gridCell.rowSpan);
 
-                xml += `<hp:tc name="" header="${isHeaderRow ? 1 : 0}" hasMargin="1" protect="0" editable="0" dirty="0" borderFillIDRef="${cellBorderFillId}">`;
-                xml += `<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="CENTER" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">${cellParagraphsXml}</hp:subList>`;
-                xml += `<hp:cellAddr colAddr="${gridCell.col}" rowAddr="${gridCell.row}"/>`;
-                xml += `<hp:cellSpan colSpan="${gridCell.colSpan}" rowSpan="${gridCell.rowSpan}"/>`;
-                xml += `<hp:cellSz width="${cellWidth}" height="${cellHeight}"/>`;
-                xml += `<hp:cellMargin left="280" right="280" top="280" bottom="280"/>`;
-                xml += `</hp:tc>`;
+                bodyXml += `<hp:tc name="" header="${isHeaderRow ? 1 : 0}" hasMargin="1" protect="0" editable="0" dirty="0" borderFillIDRef="${cellBorderFillId}">`;
+                bodyXml += `<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="CENTER" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">${cellParagraphsXml}</hp:subList>`;
+                bodyXml += `<hp:cellAddr colAddr="${gridCell.col}" rowAddr="${gridCell.row}"/>`;
+                bodyXml += `<hp:cellSpan colSpan="${gridCell.colSpan}" rowSpan="${gridCell.rowSpan}"/>`;
+                bodyXml += `<hp:cellSz width="${cellWidth}" height="${cellHeight}"/>`;
+                bodyXml += `<hp:cellMargin left="${m}" right="${m}" top="${m}" bottom="${m}"/>`;
+                bodyXml += `</hp:tc>`;
             }
 
-            xml += `</hp:tr>`;
+            bodyXml += `</hp:tr>`;
         });
 
-        xml += `</hp:tbl>`;
-        return this.callbacks.createParagraphTag(`<hp:run>${xml}<hp:t/></hp:run>`, 0);
+        return this.wrapTableParagraph({
+            numberingType: "TABLE",
+            repeatHeader: 1,
+            rowCount,
+            colCount,
+            width: totalTableWidth,
+            borderFillId: borderFillIds.table,
+            captionXml,
+            bodyXml,
+        });
     }
 
     private calculateColumnWidths(rowLengths: number[], totalAvailableWidth: number): number[] {

@@ -1,12 +1,11 @@
 import { InlineStyleContext, MarkdownToken } from "../types";
-import { asTokenArray } from "../tokenUtils";
+import { asTokenArray, getTokenText } from "../tokenUtils";
+import { decodeHtmlEntities } from "../hwpxConstants";
 import { stripKoreanSentinels } from "../pipeline/koreanPreprocessor";
 
 export interface InlineRenderCallbacks {
     resolveCharPrId: (ctx: InlineStyleContext) => number | undefined;
     createRunXml: (text: string, styleId?: number) => string;
-    decodeHtmlEntities: (text: string) => string;
-    registerLinkObject: (href: string, type: "WEB" | "REF") => number | undefined;
     wrapWithWebHyperlinkField: (url: string, innerRunsXml: string) => string;
     wrapWithBookmarkHyperlinkField: (bookmarkName: string, innerRunsXml: string) => string;
     renderFootnoteRef: (id: string, ctx: InlineStyleContext, fallbackText?: string) => string;
@@ -132,7 +131,7 @@ export function splitInlineTokensIntoLines(
         }
 
         if (token.type === "text" && (options.splitNewlines || options.splitExplicitBackslash)) {
-            const textStr = typeof token.text === "string" ? token.text : typeof token.raw === "string" ? token.raw : "";
+            const textStr = getTokenText(token);
             const splitRegex =
                 options.splitNewlines && options.splitExplicitBackslash
                     ? /\r?\n|\\\\/
@@ -176,7 +175,7 @@ function renderPlainTextWithRawUrls(
     ctx: InlineStyleContext,
     callbacks: InlineRenderCallbacks,
 ): string {
-    const text = stripKoreanSentinels(callbacks.decodeHtmlEntities(rawText));
+    const text = stripKoreanSentinels(decodeHtmlEntities(rawText));
     if (!text) {
         return "";
     }
@@ -202,7 +201,6 @@ function renderPlainTextWithRawUrls(
             cleanUrl = cleanUrl.slice(0, -trailing.length);
         }
 
-        callbacks.registerLinkObject(cleanUrl, "WEB");
         const linkCtx: InlineStyleContext = { ...ctx, underline: true };
         const linkRun = callbacks.createRunXml(cleanUrl, callbacks.resolveCharPrId(linkCtx));
         xml += callbacks.wrapWithWebHyperlinkField(cleanUrl, linkRun);
@@ -252,7 +250,7 @@ export function renderInlineTokensToRuns(
                 if (nested.length > 0) {
                     xml += renderInlineTokensToRuns(nested, activeCtx, callbacks, containerWidth);
                 } else {
-                    const value = typeof token.text === "string" ? token.text : typeof token.raw === "string" ? token.raw : "";
+                    const value = getTokenText(token);
                     xml += renderPlainTextWithRawUrls(value, activeCtx, callbacks);
                 }
                 break;
@@ -261,7 +259,7 @@ export function renderInlineTokensToRuns(
                 if (token.raw === "\\*") {
                     xml += callbacks.createRunXml("※", callbacks.resolveCharPrId(activeCtx));
                 } else {
-                    const value = stripKoreanSentinels(callbacks.decodeHtmlEntities(token.text ?? ""));
+                    const value = stripKoreanSentinels(decodeHtmlEntities(token.text ?? ""));
                     if (value) {
                         xml += callbacks.createRunXml(value, callbacks.resolveCharPrId(activeCtx));
                     }
@@ -296,7 +294,7 @@ export function renderInlineTokensToRuns(
                 break;
             }
             case "codespan": {
-                const codeText = stripKoreanSentinels(callbacks.decodeHtmlEntities(token.text ?? ""));
+                const codeText = stripKoreanSentinels(decodeHtmlEntities(token.text ?? ""));
                 xml += callbacks.createRunXml(codeText, callbacks.resolveCharPrId(activeCtx));
                 break;
             }
@@ -307,10 +305,6 @@ export function renderInlineTokensToRuns(
                 if (rawLabel.startsWith("^") && href) {
                     xml += callbacks.renderFootnoteRef(rawLabel.slice(1), activeCtx, href);
                     break;
-                }
-
-                if (href) {
-                    callbacks.registerLinkObject(href, "WEB");
                 }
 
                 const linkChildren = asTokenArray(token.tokens);
@@ -396,7 +390,7 @@ export function renderInlineTokensToRuns(
                 if (nested.length > 0) {
                     xml += renderInlineTokensToRuns(nested, activeCtx, callbacks, containerWidth);
                 } else {
-                    const fallback = typeof token.text === "string" ? token.text : typeof token.raw === "string" ? token.raw : "";
+                    const fallback = getTokenText(token);
                     if (fallback) {
                         xml += renderPlainTextWithRawUrls(fallback, activeCtx, callbacks);
                     }
