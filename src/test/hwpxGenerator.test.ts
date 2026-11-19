@@ -374,4 +374,44 @@ suite("HWPX Generator Regression Suite", () => {
         assert.ok(!sectionXml.includes("미주"));
         assert.ok(!sectionXml.includes("?ref_1"));
     });
+
+    test("renders images inside table cells as <hp:pic> without [Image] dummy text in <hp:t>", async () => {
+        const sectionXml = await generateSectionXml(`| 그림 | 설명 |\n| - | - |\n| ![아이콘](icon.png) | 설명 |`);
+        assert.ok(sectionXml.includes("<hp:pic"));
+        assert.ok(!/<hp:t(?:\s[^>]*)?>[^<]*\[Image\]/.test(sectionXml));
+    });
+
+    test("renders blockquotes recursively (nested callouts and images) with LEFT alignment", async () => {
+        const { sectionXml, headerXml } = await generateHwpxArchive(
+            `> 외부 콜아웃\n>\n> ![콜아웃 그림](box.png)\n>\n> > 내부 중첩 콜아웃`,
+        );
+        const tblCount = (sectionXml.match(/<hp:tbl\b/g) ?? []).length;
+        assert.ok(tblCount >= 2, `Expected nested callout tables (>= 2), got ${tblCount}`);
+        assert.ok(sectionXml.includes("<hp:pic"));
+
+        const leftMatch = headerXml.match(/<hh:paraPr\s+id="(\d+)"[^>]*>(?:(?!<\/hh:paraPr>)[\s\S])*?<hh:align\s+horizontal="LEFT"/g) ?? [];
+        const leftIds = new Set(leftMatch.map((m) => m.match(/id="(\d+)"/)![1]));
+        assert.ok(leftIds.size > 0);
+        assert.ok(sectionXml.includes("외부 콜아웃"));
+        assert.ok(sectionXml.includes("내부 중첩 콜아웃"));
+
+        // Every paragraph inside callouts containing quote text must be LEFT-aligned, not CENTER
+        const centerMatch = headerXml.match(/<hh:paraPr\s+id="(\d+)"[^>]*>(?:(?!<\/hh:paraPr>)[\s\S])*?<hh:align\s+horizontal="CENTER"/g) ?? [];
+        const centerIds = new Set(centerMatch.map((m) => m.match(/id="(\d+)"/)![1]));
+        const outerParaMatch = sectionXml.match(/<hp:p\b[^>]*paraPrIDRef="(\d+)"[^>]*>(?:(?!<hp:p\b|<\/hp:p>)[\s\S])*?외부 콜아웃/);
+        assert.ok(outerParaMatch && leftIds.has(outerParaMatch[1]) && !centerIds.has(outerParaMatch[1]));
+    });
+
+    test("renders fenced code blocks literally inside left-aligned callouts without markdown parsing", async () => {
+        const { sectionXml, headerXml } = await generateHwpxArchive("```text\n**not bold** ![not pic](x.png)\n```");
+        assert.ok(sectionXml.includes("**not bold** ![not pic](x.png)"));
+        assert.ok(!sectionXml.includes("<hp:pic"));
+
+        const leftMatch = headerXml.match(/<hh:paraPr\s+id="(\d+)"[^>]*>(?:(?!<\/hh:paraPr>)[\s\S])*?<hh:align\s+horizontal="LEFT"/g) ?? [];
+        const leftIds = new Set(leftMatch.map((m) => m.match(/id="(\d+)"/)![1]));
+        const codeParaMatch = sectionXml.match(
+            /<hp:p\b[^>]*paraPrIDRef="(\d+)"[^>]*>(?:(?!<hp:p\b|<\/hp:p>)[\s\S])*?\*\*not bold\*\*/,
+        );
+        assert.ok(codeParaMatch && leftIds.has(codeParaMatch[1]));
+    });
 });

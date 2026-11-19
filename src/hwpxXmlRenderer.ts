@@ -7,6 +7,13 @@ import { asTokenArray } from "./tokenUtils";
 import { lexInlineMarkdown } from "./pipeline/markdownExtensions";
 import { preprocessKoreanBoundaries, stripKoreanSentinels } from "./pipeline/koreanPreprocessor";
 import { InlineRenderCallbacks, renderInlineTokensToRuns, splitInlineTokensIntoLines } from "./renderers/inlineRenderer";
+import { TableRenderer } from "./renderers/tableRenderer";
+
+interface BlockRenderContext {
+    containerWidth: number;
+    inCallout: boolean;
+    listLevel: number;
+}
 
 interface DynamicCharPrSpec {
     id: number;
@@ -35,6 +42,8 @@ export class HwpxXmlRenderer {
         level5: 0,
         level6: 0,
         center: 0,
+        left: 0,
+        right: 0,
         reference: 1050,
     };
     private captionStyle = {
@@ -60,9 +69,25 @@ export class HwpxXmlRenderer {
     private imageAspectRatioMap = new Map<string, { width: number; height: number }>();
     private hasExplicitReferenceHeading = false;
     private readonly baseDir: string;
+    private readonly tableRenderer: TableRenderer;
 
     public constructor(baseDir: string = process.cwd()) {
         this.baseDir = baseDir;
+        this.tableRenderer = new TableRenderer({
+            generateHwpId: () => this.generateHwpId(),
+            getParaPrIds: () => ({
+                center: this.paraPrIds.center,
+                left: this.paraPrIds.left,
+                right: this.paraPrIds.right,
+            }),
+            getStyleIds: () => ({ bold: this.styleIds.bold }),
+            getBorderFillIds: () => this.borderFillIds,
+            createParagraphTag: (runXml, paraPrId, pageBreak, styleId) =>
+                this.createParagraphTag(runXml, paraPrId, pageBreak, styleId),
+            createRunXml: (text, styleId) => this.createRunXml(text, styleId),
+            createCaptionXml: (captionText, side, width) => this.createCaptionXml(captionText, side, width),
+            renderInlineTokens: (tokens, ctx, containerWidth) => this.renderInlineTokens(tokens, ctx, containerWidth),
+        });
     }
 
     public setContentWidth(width: number): void {
@@ -293,7 +318,15 @@ export class HwpxXmlRenderer {
     }
 
     private renderTokensInternal(tokens: MarkdownToken[]): string {
-        return tokens.map((token) => this.convertTokenToXml(token)).join("");
+        return this.renderBlockTokens(tokens, {
+            containerWidth: this.contentWidth,
+            inCallout: false,
+            listLevel: 0,
+        });
+    }
+
+    private renderBlockTokens(tokens: MarkdownToken[], context: BlockRenderContext): string {
+        return tokens.map((token) => this.convertTokenToXml(token, context)).join("");
     }
 
     private createParagraphTag(runXml: string, paraPrId = 0, pageBreak = 0, styleId = 0): string {
@@ -301,18 +334,19 @@ export class HwpxXmlRenderer {
         return `<hp:p id="${id}" paraPrIDRef="${paraPrId}" styleIDRef="${styleId}" pageBreak="${pageBreak}" columnBreak="0" merged="0">${runXml}</hp:p>`;
     }
 
-    private createHorizontalRuleParagraph(): string {
+    private createHorizontalRuleParagraph(width = this.contentWidth, paraPrId = 0): string {
         const pId = this.generateHwpId();
         const lineId = this.generateHwpId();
         const instId = this.generateHwpId();
-        const scaleX = (this.contentWidth / 100).toFixed(6);
+        const safeWidth = Math.max(2000, width);
+        const scaleX = (safeWidth / 100).toFixed(6);
         return (
-            `<hp:p id="${pId}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">` +
+            `<hp:p id="${pId}" paraPrIDRef="${paraPrId}" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">` +
             `<hp:run charPrIDRef="0">` +
             `<hp:line id="${lineId}" zOrder="0" numberingType="NONE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" href="" groupLevel="0" instid="${instId}" isReverseHV="0">` +
             `<hp:offset x="0" y="0"/>` +
             `<hp:orgSz width="100" height="100"/>` +
-            `<hp:curSz width="${this.contentWidth}" height="0"/>` +
+            `<hp:curSz width="${safeWidth}" height="0"/>` +
             `<hp:flip horizontal="0" vertical="0"/>` +
             `<hp:rotationInfo angle="0"/>` +
             `<hp:renderingInfo>` +
@@ -332,7 +366,7 @@ export class HwpxXmlRenderer {
             `<hp:t/>` +
             `</hp:run>` +
             `<hp:linesegarray>` +
-            `<hp:lineseg textpos="0" vertpos="0" vertsize="1000" textheight="1000" baseline="850" spacing="600" horzpos="0" horzsize="${this.contentWidth}" flags="393216"/>` +
+            `<hp:lineseg textpos="0" vertpos="0" vertsize="1000" textheight="1000" baseline="850" spacing="600" horzpos="0" horzsize="${safeWidth}" flags="393216"/>` +
             `</hp:linesegarray>` +
             `</hp:p>`
         );
@@ -397,7 +431,7 @@ export class HwpxXmlRenderer {
     private injectParagraphProperty(headerXml: string): string {
         let currentParaCnt = 0;
         const has1050 = /<hh:paraPr\s+id="1050"\b/.test(headerXml);
-        const addedCount = has1050 ? 7 : 8;
+        const addedCount = has1050 ? 9 : 10;
 
         const updatedHeader = headerXml.replace(new RegExp(`<hh:paraProperties([^>]*)>`), (match, attrs) => {
             const itemCntMatch = attrs.match(/itemCnt="(\d+)"/);
@@ -416,6 +450,8 @@ export class HwpxXmlRenderer {
             level5: currentParaCnt + 4,
             level6: currentParaCnt + 5,
             center: currentParaCnt + 6,
+            left: currentParaCnt + 7,
+            right: currentParaCnt + 8,
             reference: 1050,
         };
 
@@ -436,6 +472,8 @@ export class HwpxXmlRenderer {
         };
 
         const centerInner = inner.replace(/<hh:align\b[^>]*\/>/, `<hh:align horizontal="CENTER" vertical="BASELINE"/>`);
+        const leftInner = inner.replace(/<hh:align\b[^>]*\/>/, `<hh:align horizontal="LEFT" vertical="BASELINE"/>`);
+        const rightInner = inner.replace(/<hh:align\b[^>]*\/>/, `<hh:align horizontal="RIGHT" vertical="BASELINE"/>`);
 
         const refInner = setHangingMargin(
             inner
@@ -456,13 +494,17 @@ export class HwpxXmlRenderer {
                     <hh:paraPr id="${this.paraPrIds.level5}" ${attrs}>${setHangingMargin(inner, 6000)}</hh:paraPr>
                     <hh:paraPr id="${this.paraPrIds.level6}" ${attrs}>${setHangingMargin(inner, 7200)}</hh:paraPr>
                     <hh:paraPr id="${this.paraPrIds.center}" ${attrs}>${centerInner}</hh:paraPr>
+                    <hh:paraPr id="${this.paraPrIds.left}" ${attrs}>${leftInner}</hh:paraPr>
+                    <hh:paraPr id="${this.paraPrIds.right}" ${attrs}>${rightInner}</hh:paraPr>
                     ${refParaPrXml}
                     `;
 
         return updatedHeader.replace(new RegExp(`</hh:paraProperties>`), `${customParaPrs}</hh:paraProperties>`);
     }
 
-    private convertTokenToXml(token: MarkdownToken, listLevel = 0, orderedPrefix?: string): string {
+    private convertTokenToXml(token: MarkdownToken, context: BlockRenderContext, orderedPrefix?: string): string {
+        const defaultParaPrId = context.inCallout ? this.paraPrIds.left : 0;
+
         switch (token.type) {
             case "heading": {
                 const headingMap: Record<number, number> = {
@@ -482,29 +524,31 @@ export class HwpxXmlRenderer {
                 const headingTokens = asTokenArray(token.tokens);
                 const headingRuns =
                     headingTokens.length > 0
-                        ? this.renderInlineTokens(headingTokens, { baseCharPrId: hId })
-                        : this.parseInlineToRuns(rawHeadingText, hId);
-                return this.createParagraphTag(headingRuns || this.createRunXml("", hId));
+                        ? this.renderInlineTokens(headingTokens, { baseCharPrId: hId }, context.containerWidth)
+                        : this.parseInlineToRuns(rawHeadingText, hId, context.containerWidth);
+                return this.createParagraphTag(headingRuns || this.createRunXml("", hId), defaultParaPrId);
             }
             case "paragraph":
-                return this.renderParagraphToken(token);
+                return this.renderParagraphToken(token, context);
             case "blockMath": {
                 const mathText = typeof token.text === "string" ? token.text : "";
                 const mathRuns = this.renderLatexMathToRuns(mathText, { baseCharPrId: 0 });
-                return this.createParagraphTag(mathRuns, this.paraPrIds.center);
+                return this.createParagraphTag(mathRuns, context.inCallout ? this.paraPrIds.left : this.paraPrIds.center);
             }
             case "hr": {
                 const isPageBreak = token.ruleStyle === "pageBreak";
                 if (isPageBreak) {
-                    return this.createParagraphTag("<hp:run><hp:t></hp:t></hp:run>", 0, 1);
+                    return this.createParagraphTag("<hp:run><hp:t></hp:t></hp:run>", defaultParaPrId, 1);
                 }
-                return this.createHorizontalRuleParagraph();
+                return this.createHorizontalRuleParagraph(context.containerWidth, defaultParaPrId);
             }
             case "list": {
                 const isOrdered = Boolean(token.ordered);
                 const startNum = typeof token.start === "number" ? token.start : 1;
                 return asTokenArray(token.items)
-                    .map((item: MarkdownToken, idx: number) => this.convertTokenToXml(item, listLevel, isOrdered ? `${startNum + idx}.` : undefined))
+                    .map((item: MarkdownToken, idx: number) =>
+                        this.convertTokenToXml(item, context, isOrdered ? `${startNum + idx}.` : undefined),
+                    )
                     .join("");
             }
             case "list_item": {
@@ -517,14 +561,17 @@ export class HwpxXmlRenderer {
                     this.paraPrIds.level5,
                     this.paraPrIds.level6,
                 ];
-                const normalizedLevel = Math.max(0, Math.min(listLevel, bulletByLevel.length - 1));
+                const normalizedLevel = Math.max(0, Math.min(context.listLevel, bulletByLevel.length - 1));
                 const marker = orderedPrefix ?? bulletByLevel[normalizedLevel];
                 const paraPrId = paraPrByLevel[normalizedLevel] ?? this.paraPrIds.level6;
 
                 const childTokens = asTokenArray(token.tokens);
                 if (childTokens.length === 0) {
                     const itemText = this.reconstructTokenMarkdown(token);
-                    return this.createParagraphTag(this.parseInlineToRuns(`${marker} ${itemText}`), paraPrId);
+                    return this.createParagraphTag(
+                        this.parseInlineToRuns(`${marker} ${itemText}`, undefined, context.containerWidth),
+                        paraPrId,
+                    );
                 }
 
                 let xml = "";
@@ -551,57 +598,73 @@ export class HwpxXmlRenderer {
 
                         for (let lineIdx = 0; lineIdx < nonEmptyLines.length; lineIdx += 1) {
                             const linePrefixXml = isFirstText && lineIdx === 0 ? this.createRunXml(`${marker} `) : "";
-                            const lineRunsXml = this.renderInlineTokens(nonEmptyLines[lineIdx], { baseCharPrId: 0 });
+                            const lineRunsXml = this.renderInlineTokens(
+                                nonEmptyLines[lineIdx],
+                                { baseCharPrId: 0 },
+                                context.containerWidth,
+                            );
                             xml += this.createParagraphTag(`${linePrefixXml}${lineRunsXml}`, paraPrId);
                         }
                         isFirstText = false;
                     } else if (child.type === "list") {
-                        xml += this.convertTokenToXml(child, listLevel + 1);
+                        xml += this.convertTokenToXml(child, { ...context, listLevel: context.listLevel + 1 });
                     } else if (child.type === "space") {
                         continue;
                     } else {
-                        xml += this.convertTokenToXml(child, listLevel + 1);
+                        xml += this.convertTokenToXml(child, { ...context, listLevel: context.listLevel + 1 });
                     }
                 }
                 return xml;
             }
-            case "blockquote":
-                return this.createTableXml([[this.extractBlockquoteText(token)]], true);
-            case "table": {
-                const rows: string[][] = [];
-                const headerCells = Array.isArray(token.header) ? token.header : [];
-                const bodyRows = Array.isArray(token.rows) ? token.rows : [];
-                rows.push(headerCells.map((cell: unknown) => this.extractCellText(cell)));
-                bodyRows.forEach((row: unknown) => {
-                    const rowCells = Array.isArray(row) ? row : [];
-                    rows.push(rowCells.map((cell: unknown) => this.extractCellText(cell)));
+            case "blockquote": {
+                const innerWidth = Math.max(4000, context.containerWidth - 560);
+                const innerXml = this.renderBlockTokens(asTokenArray(token.tokens), {
+                    containerWidth: innerWidth,
+                    inCallout: true,
+                    listLevel: 0,
                 });
-                return this.createTableXml(rows, false, token.caption, token.captionSide ?? "TOP");
+                return this.tableRenderer.renderCalloutXml(innerXml, context.containerWidth);
+            }
+            case "table": {
+                return this.tableRenderer.renderTableToken(token, context.containerWidth);
             }
             case "image":
-                return this.createImageParagraph(token);
+                return this.createImageParagraph(token, context.containerWidth);
             case "code": {
                 const codeText = typeof token.text === "string" ? token.text : "";
-                return this.createTableXml([[codeText]], true);
+                const lines = codeText.split(/\r?\n/);
+                const codeParagraphsXml = (lines.length > 0 ? lines : [""])
+                    .map((line) => this.createParagraphTag(this.createRunXml(line), this.paraPrIds.left))
+                    .join("");
+                return this.tableRenderer.renderCalloutXml(codeParagraphsXml, context.containerWidth);
             }
             case "space":
-                return this.createParagraphTag("<hp:run><hp:t></hp:t></hp:run>");
+                return this.createParagraphTag("<hp:run><hp:t></hp:t></hp:run>", defaultParaPrId);
             default:
                 if (token.raw) {
-                    return this.createParagraphTag(this.parseInlineToRuns(token.raw));
+                    return this.createParagraphTag(
+                        this.parseInlineToRuns(token.raw, undefined, context.containerWidth),
+                        defaultParaPrId,
+                    );
                 }
                 return "";
         }
     }
 
-    private renderParagraphToken(token: MarkdownToken): string {
+    private renderParagraphToken(token: MarkdownToken, context: BlockRenderContext): string {
         const inlineTokens = asTokenArray(token.tokens);
+        const paraPrId = context.inCallout ? this.paraPrIds.left : 0;
+        const makeLeadingSpace = () => (context.inCallout ? "" : this.createRunXml(" "));
 
         if (token.isCaption) {
             const captionXml =
                 inlineTokens.length > 0
-                    ? this.renderInlineTokens(inlineTokens, { baseCharPrId: this.captionStyle.charPrId })
-                    : this.parseInlineToRuns(this.reconstructTokenMarkdown(token).trim(), this.captionStyle.charPrId);
+                    ? this.renderInlineTokens(inlineTokens, { baseCharPrId: this.captionStyle.charPrId }, context.containerWidth)
+                    : this.parseInlineToRuns(
+                          this.reconstructTokenMarkdown(token).trim(),
+                          this.captionStyle.charPrId,
+                          context.containerWidth,
+                      );
             return this.createParagraphTag(captionXml, this.captionStyle.paraPrId, 0, this.captionStyle.styleId);
         }
 
@@ -614,31 +677,28 @@ export class HwpxXmlRenderer {
                             (t) => t.type !== "text" || stripKoreanSentinels(t.text ?? t.raw ?? "").trim().length > 0,
                         );
                         if (!hasContent) {
-                            return this.createParagraphTag(this.createRunXml(""));
+                            return this.createParagraphTag(this.createRunXml(""), paraPrId);
                         }
-                        const leadingSpaceXml = this.createRunXml(" ");
-                        const lineXml = this.renderInlineTokens(lineToks, { baseCharPrId: 0 });
-                        return this.createParagraphTag(`${leadingSpaceXml}${lineXml}`);
+                        const lineXml = this.renderInlineTokens(lineToks, { baseCharPrId: 0 }, context.containerWidth);
+                        return this.createParagraphTag(`${makeLeadingSpace()}${lineXml}`, paraPrId);
                     })
                     .join("");
             }
 
-            const contentXml = this.renderInlineTokens(inlineTokens, { baseCharPrId: 0 });
+            const contentXml = this.renderInlineTokens(inlineTokens, { baseCharPrId: 0 }, context.containerWidth);
             if (!contentXml) {
-                return this.createParagraphTag(this.createRunXml(""));
+                return this.createParagraphTag(this.createRunXml(""), paraPrId);
             }
-            const leadingSpaceXml = this.createRunXml(" ");
-            return this.createParagraphTag(`${leadingSpaceXml}${contentXml}`);
+            return this.createParagraphTag(`${makeLeadingSpace()}${contentXml}`, paraPrId);
         }
 
         const rawParagraph = this.reconstructTokenMarkdown(token);
         if (!rawParagraph || rawParagraph.trim() === "") {
-            return this.createParagraphTag(this.createRunXml(""));
+            return this.createParagraphTag(this.createRunXml(""), paraPrId);
         }
 
-        const contentXml = this.parseInlineToRuns(rawParagraph);
-        const leadingSpaceXml = this.createRunXml(" ");
-        return this.createParagraphTag(`${leadingSpaceXml}${contentXml}`);
+        const contentXml = this.parseInlineToRuns(rawParagraph, undefined, context.containerWidth);
+        return this.createParagraphTag(`${makeLeadingSpace()}${contentXml}`, paraPrId);
     }
 
     private reconstructTokenMarkdown(token: MarkdownToken): string {
@@ -661,73 +721,8 @@ export class HwpxXmlRenderer {
         return "";
     }
 
-    private extractCellText(cell: unknown): string {
-        if (cell === null || cell === undefined) {
-            return "";
-        }
-        if (typeof cell === "string") {
-            return cell;
-        }
-        if (typeof cell === "number" || typeof cell === "boolean") {
-            return String(cell);
-        }
-
-        const value = cell as { text?: unknown; raw?: unknown; tokens?: Array<{ text?: unknown; raw?: unknown }> };
-        if (typeof value.text === "string") {
-            return value.text;
-        }
-        if (typeof value.raw === "string") {
-            return value.raw;
-        }
-        if (Array.isArray(value.tokens)) {
-            return value.tokens
-                .map((token) => {
-                    if (typeof token.raw === "string") {
-                        return token.raw;
-                    }
-                    if (typeof token.text === "string") {
-                        return token.text;
-                    }
-                    return "";
-                })
-                .join("");
-        }
-        return "";
-    }
-
-    private extractBlockquoteText(token: MarkdownToken): string {
-        if (Array.isArray(token.tokens) && token.tokens.length > 0) {
-            const parts: string[] = [];
-            for (const child of token.tokens as MarkdownToken[]) {
-                if (child.type === "space") {
-                    continue;
-                }
-                if (child.type === "list") {
-                    const isOrdered = Boolean(child.ordered);
-                    const startNum = typeof child.start === "number" ? child.start : 1;
-                    asTokenArray(child.items).forEach((item, idx) => {
-                        const prefix = isOrdered ? `${startNum + idx}. ` : "• ";
-                        parts.push(`${prefix}${this.reconstructTokenMarkdown(item).trim()}`);
-                    });
-                } else {
-                    const text = this.reconstructTokenMarkdown(child).trim();
-                    if (text) {
-                        parts.push(text);
-                    }
-                }
-            }
-            if (parts.length > 0) {
-                return parts.join("<br/>");
-            }
-        }
-        if (typeof token.text === "string" && token.text.length > 0) {
-            return token.text;
-        }
-        return "";
-    }
-
-    private createImageParagraph(token: MarkdownToken): string {
-        const picRunXml = this.createImagePictureRun(token, this.contentWidth);
+    private createImageParagraph(token: MarkdownToken, maxWidth = this.contentWidth): string {
+        const picRunXml = this.createImagePictureRun(token, maxWidth);
         return this.createParagraphTag(picRunXml, this.paraPrIds.center);
     }
 
@@ -1363,7 +1358,7 @@ export class HwpxXmlRenderer {
         return renderInlineTokensToRuns(tokens, styleContext, this.getInlineRenderCallbacks(), containerWidth);
     }
 
-    private parseInlineToRuns(text: string, defaultStyleId?: number): string {
+    private parseInlineToRuns(text: string, defaultStyleId?: number, containerWidth = this.contentWidth): string {
         const baseCtx: InlineStyleContext = {
             baseCharPrId: defaultStyleId ?? 0,
         };
@@ -1373,7 +1368,7 @@ export class HwpxXmlRenderer {
         }
 
         const inlineTokens = lexInlineMarkdown(preprocessKoreanBoundaries(text));
-        const runsXml = this.renderInlineTokens(inlineTokens, baseCtx, this.contentWidth);
+        const runsXml = this.renderInlineTokens(inlineTokens, baseCtx, containerWidth);
         return runsXml || this.createRunXml("", this.resolveCharPrId(baseCtx));
     }
 
@@ -1515,102 +1510,6 @@ export class HwpxXmlRenderer {
             `</hp:subList>` +
             `</hp:caption>`
         );
-    }
-
-    private createTableXml(rows: string[][], isCallout = false, captionText?: string, captionSide: "TOP" | "BOTTOM" = "TOP"): string {
-        const safeRows = rows.length > 0 ? rows : [[""]];
-        const tableId = this.generateHwpId();
-        const rowCount = safeRows.length;
-        const columnMaxLengths = this.getColumnMaxLengths(safeRows);
-        const colCount = columnMaxLengths.length;
-        const totalTableWidth = this.contentWidth;
-
-        let xml = `<hp:tbl id="${tableId}" zOrder="0" numberingType="${isCallout ? "NONE" : "TABLE"}" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" pageBreak="CELL" repeatHeader="${isCallout ? 0 : 1}" rowCnt="${rowCount}" colCnt="${colCount}" cellSpacing="0" borderFillIDRef="${isCallout ? this.borderFillIds.callout : this.borderFillIds.table}" noAdjust="1">`;
-        xml += `<hp:sz width="${totalTableWidth}" widthRelTo="ABSOLUTE" height="0" heightRelTo="ABSOLUTE" protect="0"/>`;
-        xml += `<hp:pos treatAsChar="0" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>`;
-        xml += `<hp:outMargin left="0" right="0" top="141" bottom="141"/>`;
-        xml += `<hp:inMargin left="280" right="280" top="280" bottom="280"/>`;
-        if (!isCallout && captionText) {
-            xml += this.createCaptionXml(captionText, captionSide, totalTableWidth);
-        }
-
-        const widths = this.calculateColumnWidths(columnMaxLengths, totalTableWidth);
-
-        safeRows.forEach((row, rowIndex) => {
-            xml += `<hp:tr>`;
-            const isHeaderRow = !isCallout && rowIndex === 0 && rowCount > 1;
-            const cellBorderFillId = isCallout ? this.borderFillIds.callout : isHeaderRow ? this.borderFillIds.tableHeader : this.borderFillIds.table;
-            const defaultCellStyleId = isHeaderRow ? this.styleIds.bold : undefined;
-
-            for (let colIndex = 0; colIndex < colCount; colIndex++) {
-                const cellWidth = widths[colIndex] ?? widths[widths.length - 1];
-                const rawCellText = row[colIndex] ?? "";
-                const cellLineGroups = splitInlineTokensIntoLines(
-                    lexInlineMarkdown(preprocessKoreanBoundaries(rawCellText)),
-                    { splitBr: true, splitNewlines: true },
-                );
-                const nonEmptyLines = cellLineGroups.filter((lineToks) =>
-                    lineToks.some((t) => t.type !== "text" || stripKoreanSentinels(t.text ?? t.raw ?? "").trim().length > 0),
-                );
-
-                const effectiveLines = nonEmptyLines.length > 0 ? nonEmptyLines : [[]];
-                const cellParagraphsXml = effectiveLines
-                    .map((lineToks) =>
-                        this.createParagraphTag(
-                            lineToks.length > 0
-                                ? this.renderInlineTokens(lineToks, { baseCharPrId: defaultCellStyleId ?? 0 }, Math.max(2000, cellWidth - 560))
-                                : this.createRunXml("", defaultCellStyleId),
-                            this.paraPrIds.center,
-                        ),
-                    )
-                    .join("");
-
-                const cellHeight = 1800 * Math.max(1, effectiveLines.length);
-
-                xml += `<hp:tc name="" header="${isHeaderRow ? 1 : 0}" hasMargin="1" protect="0" editable="0" dirty="0" borderFillIDRef="${cellBorderFillId}">`;
-                xml += `<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="CENTER" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">${cellParagraphsXml}</hp:subList>`;
-                xml += `<hp:cellAddr colAddr="${colIndex}" rowAddr="${rowIndex}"/>`;
-                xml += `<hp:cellSpan colSpan="1" rowSpan="1"/>`;
-                xml += `<hp:cellSz width="${cellWidth}" height="${cellHeight}"/>`;
-                xml += `<hp:cellMargin left="280" right="280" top="280" bottom="280"/>`;
-                xml += `</hp:tc>`;
-            }
-
-            xml += `</hp:tr>`;
-        });
-
-        xml += `</hp:tbl>`;
-        return this.createParagraphTag(`<hp:run>${xml}<hp:t/></hp:run>`, 0);
-    }
-
-    private calculateColumnWidths(rowLengths: number[], totalAvailableWidth: number): number[] {
-        const safeLengths = rowLengths.length > 0 ? rowLengths : [1];
-        const weights = safeLengths.map((len) => Math.max(len + 2, 5));
-        const totalWeight = weights.reduce((a, b) => a + b, 0);
-        const widths = weights.map((w) => Math.floor(totalAvailableWidth * (w / totalWeight)));
-
-        const currentSum = widths.reduce((a, b) => a + b, 0);
-        widths[widths.length - 1] += totalAvailableWidth - currentSum;
-        return widths;
-    }
-
-    private getColumnMaxLengths(rows: string[][]): number[] {
-        if (rows.length === 0) {
-            return [1];
-        }
-
-        const maxColumnCount = rows.reduce((max, row) => Math.max(max, row.length), 0);
-        const maxLengths = new Array<number>(Math.max(maxColumnCount, 1)).fill(1);
-
-        for (const row of rows) {
-            for (let index = 0; index < maxLengths.length; index++) {
-                const cell = row[index] ?? "";
-                const longestLineLen = cell.split(/<\/?br\s*\/?>|\n/gi).reduce((m, l) => Math.max(m, l.trim().length), 1);
-                maxLengths[index] = Math.max(maxLengths[index], longestLineLen);
-            }
-        }
-
-        return maxLengths;
     }
 
     private decodeHtmlEntities(text: string): string {
