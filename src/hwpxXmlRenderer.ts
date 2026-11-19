@@ -5,6 +5,7 @@ import { preprocessKoreanBoundaries, stripKoreanSentinels } from "./pipeline/kor
 import { InlineRenderCallbacks, renderInlineTokensToRuns, splitInlineTokensIntoLines } from "./renderers/inlineRenderer";
 import { TableRenderer } from "./renderers/tableRenderer";
 import { ImageRenderer } from "./renderers/imageRenderer";
+import { StyleRegistry } from "./renderers/styleRegistry";
 
 interface BlockRenderContext {
     containerWidth: number;
@@ -12,46 +13,11 @@ interface BlockRenderContext {
     listLevel: number;
 }
 
-interface DynamicCharPrSpec {
-    id: number;
-    baseCharPrId: number;
-    bold: boolean;
-    italic: boolean;
-    strike: boolean;
-    underline: boolean;
-    supscript: boolean;
-    subscript: boolean;
-}
-
 export class HwpxXmlRenderer {
-    private styleIds = { bold: 0, ul: 0, h1: 0, h2: 0, h3: 0, h4: 0, h5: 0, h6: 0 };
-    private paraPrIds = {
-        level1: 0,
-        level2: 0,
-        level3: 0,
-        level4: 0,
-        level5: 0,
-        level6: 0,
-        center: 0,
-        left: 0,
-        right: 0,
-        reference: 1050,
-    };
-    private captionStyle = {
-        styleId: 21,
-        paraPrId: 19,
-        charPrId: 0,
-    };
-    private borderFillIds = {
-        table: 3,
-        tableHeader: 4,
-        callout: 5,
-    };
+    private readonly styleRegistry = new StyleRegistry();
 
     private contentWidth = 42520;
     private currentElementId = 1000000000;
-    private nextDynamicCharPrId = 20;
-    private dynamicCharPrMap = new Map<string, DynamicCharPrSpec>();
 
     private footnotes: Array<{ index: number; id: string; text: string; referenced: boolean }> = [];
     private linkObjects: Array<{ id: number; href: string; type: "WEB" | "REF" }> = [];
@@ -65,7 +31,7 @@ export class HwpxXmlRenderer {
         this.imageRenderer = new ImageRenderer(this.baseDir, {
             generateHwpId: () => this.generateHwpId(),
             getContentWidth: () => this.contentWidth,
-            getCenterParaPrId: () => this.paraPrIds.center,
+            getCenterParaPrId: () => this.styleRegistry.paraPrIds.center,
             createParagraphTag: (runXml, paraPrId, pageBreak, styleId) =>
                 this.createParagraphTag(runXml, paraPrId, pageBreak, styleId),
             createCaptionXml: (captionText, side, width) => this.createCaptionXml(captionText, side, width),
@@ -74,12 +40,12 @@ export class HwpxXmlRenderer {
         this.tableRenderer = new TableRenderer({
             generateHwpId: () => this.generateHwpId(),
             getParaPrIds: () => ({
-                center: this.paraPrIds.center,
-                left: this.paraPrIds.left,
-                right: this.paraPrIds.right,
+                center: this.styleRegistry.paraPrIds.center,
+                left: this.styleRegistry.paraPrIds.left,
+                right: this.styleRegistry.paraPrIds.right,
             }),
-            getStyleIds: () => ({ bold: this.styleIds.bold }),
-            getBorderFillIds: () => this.borderFillIds,
+            getStyleIds: () => ({ bold: this.styleRegistry.styleIds.bold }),
+            getBorderFillIds: () => this.styleRegistry.borderFillIds,
             createParagraphTag: (runXml, paraPrId, pageBreak, styleId) =>
                 this.createParagraphTag(runXml, paraPrId, pageBreak, styleId),
             createRunXml: (text, styleId) => this.createRunXml(text, styleId),
@@ -103,73 +69,7 @@ export class HwpxXmlRenderer {
     }
 
     public prepareHeaderXml(headerXml: string): string {
-        this.detectCaptionStyleFromHeader(headerXml);
-        let updatedHeader = this.injectBorderFillToHeader(headerXml);
-        updatedHeader = this.injectParagraphProperty(updatedHeader);
-
-        const nsMatch = updatedHeader.match(/<([a-zA-Z]+):charProperties/);
-        const ns = nsMatch ? nsMatch[1] : "hh";
-
-        let currentItemCnt = 0;
-        updatedHeader = updatedHeader.replace(new RegExp(`<${ns}:charProperties([^>]*)>`), (match, attrs) => {
-            const itemCntMatch = attrs.match(/itemCnt="(\d+)"/);
-            if (itemCntMatch) {
-                currentItemCnt = parseInt(itemCntMatch[1], 10);
-                return `<${ns}:charProperties ` + attrs.replace(/itemCnt="\d+"/, `itemCnt="${currentItemCnt + 8}"`) + `>`;
-            }
-            return match;
-        });
-
-        this.styleIds = {
-            bold: currentItemCnt,
-            ul: currentItemCnt + 1,
-            h1: currentItemCnt + 2,
-            h2: currentItemCnt + 3,
-            h3: currentItemCnt + 4,
-            h4: currentItemCnt + 5,
-            h5: currentItemCnt + 6,
-            h6: currentItemCnt + 7,
-        };
-        this.nextDynamicCharPrId = currentItemCnt + 8;
-        this.dynamicCharPrMap.clear();
-
-        const baseStyleMatch = updatedHeader.match(new RegExp(`<${ns}:charPr\\s+id="0"([^>]*)>([\\s\\S]*?)<\\/${ns}:charPr>`));
-        if (!baseStyleMatch) {
-            return updatedHeader;
-        }
-
-        const attrs = baseStyleMatch[1];
-        const inner = baseStyleMatch[2];
-        const setHeight = (attrStr: string, height: string) =>
-            attrStr.includes("height=") ? attrStr.replace(/height="\d+"/, `height="${height}"`) : attrStr + ` height="${height}"`;
-
-        const customStyles = `
-                    <${ns}:charPr id="${this.styleIds.bold}" ${attrs}>${inner}<${ns}:bold>1</${ns}:bold></${ns}:charPr>
-                    <${ns}:charPr id="${this.styleIds.ul}" ${attrs}>${inner}<${ns}:underline type="bottom" shape="solid" color="000000"/></${ns}:charPr>
-                    <${ns}:charPr id="${this.styleIds.h1}" ${setHeight(attrs, "1600")}>${inner}<${ns}:bold>1</${ns}:bold></${ns}:charPr>
-                    <${ns}:charPr id="${this.styleIds.h2}" ${setHeight(attrs, "1400")}>${inner}<${ns}:bold>1</${ns}:bold></${ns}:charPr>
-                    <${ns}:charPr id="${this.styleIds.h3}" ${setHeight(attrs, "1200")}>${inner}<${ns}:bold>1</${ns}:bold></${ns}:charPr>
-                    <${ns}:charPr id="${this.styleIds.h4}" ${setHeight(attrs, "1200")}>${inner}<${ns}:bold>1</${ns}:bold></${ns}:charPr>
-                    <${ns}:charPr id="${this.styleIds.h5}" ${setHeight(attrs, "1200")}>${inner}<${ns}:bold>1</${ns}:bold></${ns}:charPr>
-                    <${ns}:charPr id="${this.styleIds.h6}" ${setHeight(attrs, "1200")}>${inner}<${ns}:bold>1</${ns}:bold></${ns}:charPr>
-                    `;
-
-        return updatedHeader.replace(new RegExp(`</${ns}:charProperties>`), `${customStyles}</${ns}:charProperties>`);
-    }
-
-    private detectCaptionStyleFromHeader(headerXml: string): void {
-        const captionStyleMatch =
-            headerXml.match(/<hh:style\b[^>]*name="(?:캡션|캡션_표)"[^>]*\/>/) ??
-            headerXml.match(/<hh:style\b[^>]*engName="Caption"[^>]*\/>/);
-        if (captionStyleMatch) {
-            const tag = captionStyleMatch[0];
-            const id = parseInt(tag.match(/\bid="(\d+)"/)?.[1] ?? "21", 10);
-            const paraPrId = parseInt(tag.match(/\bparaPrIDRef="(\d+)"/)?.[1] ?? "19", 10);
-            const charPrId = parseInt(tag.match(/\bcharPrIDRef="(\d+)"/)?.[1] ?? "0", 10);
-            this.captionStyle = { styleId: id, paraPrId, charPrId };
-        } else {
-            this.captionStyle = { styleId: 0, paraPrId: 0, charPrId: 0 };
-        }
+        return this.styleRegistry.prepareHeaderXml(headerXml);
     }
 
     public renderTokens(tokens: MarkdownToken[]): string {
@@ -193,124 +93,11 @@ export class HwpxXmlRenderer {
     }
 
     public finalizeHeaderXml(headerXml: string): string {
-        let finalized = headerXml;
-
-        if (this.dynamicCharPrMap.size > 0) {
-            const nsMatch = finalized.match(/<([a-zA-Z]+):charProperties/);
-            const ns = nsMatch ? nsMatch[1] : "hh";
-
-            const baseStyleMatch = finalized.match(new RegExp(`<${ns}:charPr\\s+id="0"([^>]*)>([\\s\\S]*?)<\\/${ns}:charPr>`));
-            if (baseStyleMatch) {
-                const defaultAttrs = baseStyleMatch[1];
-                const defaultInner = baseStyleMatch[2];
-
-                const getBaseAttrsAndInner = (baseId: number): { attrs: string; inner: string } => {
-                    const m = finalized.match(new RegExp(`<${ns}:charPr\\s+id="${baseId}"([^>]*)>([\\s\\S]*?)<\\/${ns}:charPr>`));
-                    if (m) {
-                        return { attrs: m[1], inner: m[2] };
-                    }
-                    return { attrs: defaultAttrs, inner: defaultInner };
-                };
-
-                const dynamicXmlParts: string[] = [];
-                for (const spec of this.dynamicCharPrMap.values()) {
-                    const { attrs, inner } = getBaseAttrsAndInner(spec.baseCharPrId);
-                    let modifiedInner = inner;
-
-                    if (spec.bold && !new RegExp(`<${ns}:bold\\b`).test(modifiedInner)) {
-                        modifiedInner += `<${ns}:bold>1</${ns}:bold>`;
-                    }
-                    if (spec.italic && !new RegExp(`<${ns}:italic\\b`).test(modifiedInner)) {
-                        modifiedInner += `<${ns}:italic>1</${ns}:italic>`;
-                    }
-                    if (spec.underline) {
-                        if (new RegExp(`<${ns}:underline\\b[^>]*\\/>`).test(modifiedInner)) {
-                            modifiedInner = modifiedInner.replace(
-                                new RegExp(`<${ns}:underline\\b[^>]*\\/>`),
-                                `<${ns}:underline type="BOTTOM" shape="SOLID" color="#000000"/>`,
-                            );
-                        } else {
-                            modifiedInner += `<${ns}:underline type="BOTTOM" shape="SOLID" color="#000000"/>`;
-                        }
-                    }
-                    if (spec.strike) {
-                        if (new RegExp(`<${ns}:strikeout\\b[^>]*\\/>`).test(modifiedInner)) {
-                            modifiedInner = modifiedInner.replace(
-                                new RegExp(`<${ns}:strikeout\\b[^>]*\\/>`),
-                                `<${ns}:strikeout shape="SOLID" color="#000000"/>`,
-                            );
-                        } else {
-                            modifiedInner += `<${ns}:strikeout shape="SOLID" color="#000000"/>`;
-                        }
-                    }
-                    if (spec.supscript && !new RegExp(`<${ns}:supscript\\b`).test(modifiedInner)) {
-                        modifiedInner += `<${ns}:supscript>1</${ns}:supscript>`;
-                    }
-                    if (spec.subscript && !new RegExp(`<${ns}:subscript\\b`).test(modifiedInner)) {
-                        modifiedInner += `<${ns}:subscript>1</${ns}:subscript>`;
-                    }
-
-                    dynamicXmlParts.push(`<${ns}:charPr id="${spec.id}"${attrs}>${modifiedInner}</${ns}:charPr>`);
-                }
-
-                finalized = finalized.replace(
-                    new RegExp(`(<${ns}:charProperties[^>]*?itemCnt=")(\\d+)(")`),
-                    (match, prefix, cnt, suffix) => `${prefix}${parseInt(cnt, 10) + dynamicXmlParts.length}${suffix}`,
-                );
-                finalized = finalized.replace(new RegExp(`</${ns}:charProperties>`), `${dynamicXmlParts.join("")}</${ns}:charProperties>`);
-            }
-        }
-
-        return finalized;
+        return this.styleRegistry.finalizeHeaderXml(headerXml);
     }
 
     private resolveCharPrId(ctx: InlineStyleContext): number | undefined {
-        const baseId = ctx.baseCharPrId || 0;
-        const headingIds = new Set([this.styleIds.h1, this.styleIds.h2, this.styleIds.h3, this.styleIds.h4, this.styleIds.h5, this.styleIds.h6]);
-        const isBaseAlreadyBold = baseId === this.styleIds.bold || headingIds.has(baseId);
-        const bold = Boolean(ctx.bold || isBaseAlreadyBold);
-        const italic = Boolean(ctx.italic);
-        const strike = Boolean(ctx.strike);
-        const underline = Boolean(ctx.underline);
-        const supscript = Boolean(ctx.supscript);
-        const subscript = Boolean(ctx.subscript);
-
-        if (!bold && !italic && !strike && !underline && !supscript && !subscript) {
-            return baseId > 0 ? baseId : undefined;
-        }
-
-        if (baseId === 0 || baseId === this.styleIds.bold) {
-            if (bold && !italic && !strike && !underline && !supscript && !subscript) {
-                return this.styleIds.bold;
-            }
-            if (!bold && !italic && !strike && underline && !supscript && !subscript) {
-                return this.styleIds.ul;
-            }
-        }
-
-        if (headingIds.has(baseId) && bold && !italic && !strike && !underline && !supscript && !subscript) {
-            return baseId;
-        }
-
-        const effectiveBase = baseId === this.styleIds.bold ? 0 : baseId;
-        const key = `${effectiveBase}|b:${bold ? 1 : 0}|i:${italic ? 1 : 0}|s:${strike ? 1 : 0}|u:${underline ? 1 : 0}|sup:${supscript ? 1 : 0}|sub:${subscript ? 1 : 0}`;
-        const existing = this.dynamicCharPrMap.get(key);
-        if (existing) {
-            return existing.id;
-        }
-
-        const spec: DynamicCharPrSpec = {
-            id: this.nextDynamicCharPrId++,
-            baseCharPrId: effectiveBase,
-            bold,
-            italic,
-            strike,
-            underline,
-            supscript,
-            subscript,
-        };
-        this.dynamicCharPrMap.set(key, spec);
-        return spec.id;
+        return this.styleRegistry.resolveCharPrId(ctx);
     }
 
     private renderTokensInternal(tokens: MarkdownToken[]): string {
@@ -368,151 +155,22 @@ export class HwpxXmlRenderer {
         );
     }
 
-    private injectBorderFillToHeader(headerXmlString: string): string {
-        let maxBorderId = 2;
-        for (const m of headerXmlString.matchAll(/<hh:borderFill\s+id="(\d+)"/g)) {
-            const idNum = parseInt(m[1], 10);
-            if (idNum > maxBorderId) {
-                maxBorderId = idNum;
-            }
-        }
-
-        this.borderFillIds = {
-            table: maxBorderId + 1,
-            tableHeader: maxBorderId + 2,
-            callout: maxBorderId + 3,
-        };
-
-        const newBorderFills = `
-            <hh:borderFill id="${this.borderFillIds.table}" threeD="0" shadow="0" centerLine="NONE" breakCellSeparateLine="0">
-                <hh:slash type="NONE" Crooked="0" isCounter="0"/>
-                <hh:backSlash type="NONE" Crooked="0" isCounter="0"/>
-                <hh:leftBorder type="SOLID" width="0.12 mm" color="#000000"/>
-                <hh:rightBorder type="SOLID" width="0.12 mm" color="#000000"/>
-                <hh:topBorder type="SOLID" width="0.12 mm" color="#000000"/>
-                <hh:bottomBorder type="SOLID" width="0.12 mm" color="#000000"/>
-                <hh:diagonal type="SOLID" width="0.1 mm" color="#000000"/>
-            </hh:borderFill>
-            <hh:borderFill id="${this.borderFillIds.tableHeader}" threeD="0" shadow="0" centerLine="NONE" breakCellSeparateLine="0">
-                <hh:slash type="NONE" Crooked="0" isCounter="0"/>
-                <hh:backSlash type="NONE" Crooked="0" isCounter="0"/>
-                <hh:leftBorder type="SOLID" width="0.12 mm" color="#000000"/>
-                <hh:rightBorder type="SOLID" width="0.12 mm" color="#000000"/>
-                <hh:topBorder type="SOLID" width="0.12 mm" color="#000000"/>
-                <hh:bottomBorder type="SOLID" width="0.12 mm" color="#000000"/>
-                <hh:diagonal type="SOLID" width="0.1 mm" color="#000000"/>
-                <hc:fillBrush><hc:winBrush faceColor="#E5E5E5" hatchColor="#000000" alpha="0"/></hc:fillBrush>
-            </hh:borderFill>
-            <hh:borderFill id="${this.borderFillIds.callout}" threeD="0" shadow="0" centerLine="NONE" breakCellSeparateLine="0">
-                <hh:slash type="NONE" Crooked="0" isCounter="0"/>
-                <hh:backSlash type="NONE" Crooked="0" isCounter="0"/>
-                <hh:leftBorder type="SOLID" width="0.12 mm" color="#000000"/>
-                <hh:rightBorder type="SOLID" width="0.12 mm" color="#000000"/>
-                <hh:topBorder type="SOLID" width="0.12 mm" color="#000000"/>
-                <hh:bottomBorder type="SOLID" width="0.12 mm" color="#000000"/>
-                <hh:diagonal type="SOLID" width="0.1 mm" color="#000000"/>
-                <hc:fillBrush><hc:winBrush faceColor="#F9F9F9" hatchColor="#000000" alpha="0"/></hc:fillBrush>
-            </hh:borderFill>
-        `;
-
-        let updatedXml = headerXmlString.replace(/(<hh:borderFills[^>]*?itemCnt=")(\d+)(")/, (match, prefix, currentCnt, suffix) => {
-            const newCnt = parseInt(currentCnt, 10) + 3;
-            return `${prefix}${newCnt}${suffix}`;
-        });
-
-        updatedXml = updatedXml.replace(/(<\/hh:borderFills>)/, `${newBorderFills}$1`);
-        return updatedXml;
-    }
-
-    private injectParagraphProperty(headerXml: string): string {
-        let currentParaCnt = 0;
-        const has1050 = /<hh:paraPr\s+id="1050"\b/.test(headerXml);
-        const addedCount = has1050 ? 9 : 10;
-
-        const updatedHeader = headerXml.replace(new RegExp(`<hh:paraProperties([^>]*)>`), (match, attrs) => {
-            const itemCntMatch = attrs.match(/itemCnt="(\d+)"/);
-            if (itemCntMatch) {
-                currentParaCnt = parseInt(itemCntMatch[1], 10);
-                return `<hh:paraProperties ` + attrs.replace(/itemCnt="\d+"/, `itemCnt="${currentParaCnt + addedCount}"`) + `>`;
-            }
-            return match;
-        });
-
-        this.paraPrIds = {
-            level1: currentParaCnt,
-            level2: currentParaCnt + 1,
-            level3: currentParaCnt + 2,
-            level4: currentParaCnt + 3,
-            level5: currentParaCnt + 4,
-            level6: currentParaCnt + 5,
-            center: currentParaCnt + 6,
-            left: currentParaCnt + 7,
-            right: currentParaCnt + 8,
-            reference: 1050,
-        };
-
-        const baseParaMatch = updatedHeader.match(new RegExp(`<hh:paraPr\\s+id="0"([^>]*)>([\\s\\S]*?)<\\/hh:paraPr>`));
-        if (!baseParaMatch) {
-            return updatedHeader;
-        }
-
-        const attrs = baseParaMatch[1];
-        const inner = baseParaMatch[2];
-
-        // Hanging indent (Shift-Tab 내어쓰기): left = leftMargin, intent = indentVal
-        const setHangingMargin = (xmlStr: string, leftMargin: number, indentVal = -1200) => {
-            return xmlStr.replace(
-                /<hh:margin[^>]*>[\s\S]*?<\/hh:margin>/g,
-                `<hh:margin><hc:intent value="${indentVal}" unit="HWPUNIT"/><hc:left value="${leftMargin}" unit="HWPUNIT"/><hc:right value="0" unit="HWPUNIT"/><hc:prev value="0" unit="HWPUNIT"/><hc:next value="0" unit="HWPUNIT"/></hh:margin>`,
-            );
-        };
-
-        const centerInner = inner.replace(/<hh:align\b[^>]*\/>/, `<hh:align horizontal="CENTER" vertical="BASELINE"/>`);
-        const leftInner = inner.replace(/<hh:align\b[^>]*\/>/, `<hh:align horizontal="LEFT" vertical="BASELINE"/>`);
-        const rightInner = inner.replace(/<hh:align\b[^>]*\/>/, `<hh:align horizontal="RIGHT" vertical="BASELINE"/>`);
-
-        const refInner = setHangingMargin(
-            inner
-                .replace(/<hh:align\b[^>]*\/>/, `<hh:align horizontal="LEFT" vertical="BASELINE"/>`)
-                .replace(/breakLatinWord="[^"]*"/, `breakLatinWord="BREAK_WORD"`)
-                .replace(/breakNonLatinWord="[^"]*"/, `breakNonLatinWord="BREAK_WORD"`),
-            1800,
-            -1800,
-        );
-
-        const refParaPrXml = has1050 ? "" : `<hh:paraPr id="1050" ${attrs}>${refInner}</hh:paraPr>`;
-
-        const customParaPrs = `
-                    <hh:paraPr id="${this.paraPrIds.level1}" ${attrs}>${setHangingMargin(inner, 1200)}</hh:paraPr>
-                    <hh:paraPr id="${this.paraPrIds.level2}" ${attrs}>${setHangingMargin(inner, 2400)}</hh:paraPr>
-                    <hh:paraPr id="${this.paraPrIds.level3}" ${attrs}>${setHangingMargin(inner, 3600)}</hh:paraPr>
-                    <hh:paraPr id="${this.paraPrIds.level4}" ${attrs}>${setHangingMargin(inner, 4800)}</hh:paraPr>
-                    <hh:paraPr id="${this.paraPrIds.level5}" ${attrs}>${setHangingMargin(inner, 6000)}</hh:paraPr>
-                    <hh:paraPr id="${this.paraPrIds.level6}" ${attrs}>${setHangingMargin(inner, 7200)}</hh:paraPr>
-                    <hh:paraPr id="${this.paraPrIds.center}" ${attrs}>${centerInner}</hh:paraPr>
-                    <hh:paraPr id="${this.paraPrIds.left}" ${attrs}>${leftInner}</hh:paraPr>
-                    <hh:paraPr id="${this.paraPrIds.right}" ${attrs}>${rightInner}</hh:paraPr>
-                    ${refParaPrXml}
-                    `;
-
-        return updatedHeader.replace(new RegExp(`</hh:paraProperties>`), `${customParaPrs}</hh:paraProperties>`);
-    }
-
     private convertTokenToXml(token: MarkdownToken, context: BlockRenderContext, orderedPrefix?: string): string {
-        const defaultParaPrId = context.inCallout ? this.paraPrIds.left : 0;
+        const defaultParaPrId = context.inCallout ? this.styleRegistry.paraPrIds.left : 0;
 
         switch (token.type) {
             case "heading": {
+                const styleIds = this.styleRegistry.styleIds;
                 const headingMap: Record<number, number> = {
-                    1: this.styleIds.h1,
-                    2: this.styleIds.h2,
-                    3: this.styleIds.h3,
-                    4: this.styleIds.h4,
-                    5: this.styleIds.h5,
-                    6: this.styleIds.h6,
+                    1: styleIds.h1,
+                    2: styleIds.h2,
+                    3: styleIds.h3,
+                    4: styleIds.h4,
+                    5: styleIds.h5,
+                    6: styleIds.h6,
                 };
                 const depth = typeof token.depth === "number" ? token.depth : 6;
-                const hId = headingMap[depth] ?? this.styleIds.h6;
+                const hId = headingMap[depth] ?? styleIds.h6;
                 const rawHeadingText = stripKoreanSentinels(this.reconstructTokenMarkdown(token));
                 if (/참고문헌|References|미주/i.test(rawHeadingText)) {
                     this.hasExplicitReferenceHeading = true;
@@ -529,7 +187,10 @@ export class HwpxXmlRenderer {
             case "blockMath": {
                 const mathText = typeof token.text === "string" ? token.text : "";
                 const mathRuns = this.renderLatexMathToRuns(mathText, { baseCharPrId: 0 });
-                return this.createParagraphTag(mathRuns, context.inCallout ? this.paraPrIds.left : this.paraPrIds.center);
+                return this.createParagraphTag(
+                    mathRuns,
+                    context.inCallout ? this.styleRegistry.paraPrIds.left : this.styleRegistry.paraPrIds.center,
+                );
             }
             case "hr": {
                 const isPageBreak = token.ruleStyle === "pageBreak";
@@ -549,17 +210,18 @@ export class HwpxXmlRenderer {
             }
             case "list_item": {
                 const bulletByLevel = ["□", "◦", "•", "▪", "▫", "‣"];
+                const paraPrIds = this.styleRegistry.paraPrIds;
                 const paraPrByLevel = [
-                    this.paraPrIds.level1,
-                    this.paraPrIds.level2,
-                    this.paraPrIds.level3,
-                    this.paraPrIds.level4,
-                    this.paraPrIds.level5,
-                    this.paraPrIds.level6,
+                    paraPrIds.level1,
+                    paraPrIds.level2,
+                    paraPrIds.level3,
+                    paraPrIds.level4,
+                    paraPrIds.level5,
+                    paraPrIds.level6,
                 ];
                 const normalizedLevel = Math.max(0, Math.min(context.listLevel, bulletByLevel.length - 1));
                 const marker = orderedPrefix ?? bulletByLevel[normalizedLevel];
-                const paraPrId = paraPrByLevel[normalizedLevel] ?? this.paraPrIds.level6;
+                const paraPrId = paraPrByLevel[normalizedLevel] ?? paraPrIds.level6;
 
                 const childTokens = asTokenArray(token.tokens);
                 if (childTokens.length === 0) {
@@ -630,7 +292,7 @@ export class HwpxXmlRenderer {
                 const codeText = typeof token.text === "string" ? token.text : "";
                 const lines = codeText.split(/\r?\n/);
                 const codeParagraphsXml = (lines.length > 0 ? lines : [""])
-                    .map((line) => this.createParagraphTag(this.createRunXml(line), this.paraPrIds.left))
+                    .map((line) => this.createParagraphTag(this.createRunXml(line), this.styleRegistry.paraPrIds.left))
                     .join("");
                 return this.tableRenderer.renderCalloutXml(codeParagraphsXml, context.containerWidth);
             }
@@ -649,19 +311,20 @@ export class HwpxXmlRenderer {
 
     private renderParagraphToken(token: MarkdownToken, context: BlockRenderContext): string {
         const inlineTokens = asTokenArray(token.tokens);
-        const paraPrId = context.inCallout ? this.paraPrIds.left : 0;
+        const paraPrId = context.inCallout ? this.styleRegistry.paraPrIds.left : 0;
         const makeLeadingSpace = () => (context.inCallout ? "" : this.createRunXml(" "));
 
         if (token.isCaption) {
+            const captionStyle = this.styleRegistry.captionStyle;
             const captionXml =
                 inlineTokens.length > 0
-                    ? this.renderInlineTokens(inlineTokens, { baseCharPrId: this.captionStyle.charPrId }, context.containerWidth)
+                    ? this.renderInlineTokens(inlineTokens, { baseCharPrId: captionStyle.charPrId }, context.containerWidth)
                     : this.parseInlineToRuns(
                           this.reconstructTokenMarkdown(token).trim(),
-                          this.captionStyle.charPrId,
+                          captionStyle.charPrId,
                           context.containerWidth,
                       );
-            return this.createParagraphTag(captionXml, this.captionStyle.paraPrId, 0, this.captionStyle.styleId);
+            return this.createParagraphTag(captionXml, captionStyle.paraPrId, 0, captionStyle.styleId);
         }
 
         if (inlineTokens.length > 0) {
@@ -783,13 +446,15 @@ export class HwpxXmlRenderer {
 
         let xml = "";
         if (!this.hasExplicitReferenceHeading) {
-            xml += this.createParagraphTag(this.parseInlineToRuns("미주", this.styleIds.h3));
+            xml += this.createParagraphTag(this.parseInlineToRuns("미주", this.styleRegistry.styleIds.h3));
         }
 
         for (const fn of this.footnotes) {
             const bookmarkRun = `<hp:run><hp:ctrl><hp:bookmark name="ref_${fn.index}"/></hp:ctrl></hp:run>`;
-            const itemRuns = this.parseInlineToRuns(`[${fn.index}] ${fn.text}`);
-            xml += this.createParagraphTag(`${bookmarkRun}${itemRuns}`, this.paraPrIds.reference);
+            const indexTabRun = `<hp:run><hp:t>[${fn.index}]<hp:tab width="1800" leader="0" type="0"/></hp:t></hp:run>`;
+            const fnTokens = lexInlineMarkdown(preprocessKoreanBoundaries(fn.text));
+            const bodyRuns = this.renderInlineTokens(fnTokens, { baseCharPrId: 0 });
+            xml += this.createParagraphTag(`${bookmarkRun}${indexTabRun}${bodyRuns}`, this.styleRegistry.paraPrIds.reference);
         }
         return xml;
     }
@@ -1013,8 +678,9 @@ export class HwpxXmlRenderer {
 
     private createCaptionXml(captionText: string, side: "TOP" | "BOTTOM", width: number): string {
         const subListId = this.generateHwpId();
-        const runsXml = this.parseInlineToRuns(captionText.trim(), this.captionStyle.charPrId);
-        const paragraphXml = this.createParagraphTag(runsXml, this.captionStyle.paraPrId, 0, this.captionStyle.styleId);
+        const captionStyle = this.styleRegistry.captionStyle;
+        const runsXml = this.parseInlineToRuns(captionText.trim(), captionStyle.charPrId);
+        const paragraphXml = this.createParagraphTag(runsXml, captionStyle.paraPrId, 0, captionStyle.styleId);
         return (
             `<hp:caption side="${side}" fullSz="0" width="${width}" gap="850" lastWidth="${width}">` +
             `<hp:subList id="${subListId}" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">` +

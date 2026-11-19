@@ -453,4 +453,69 @@ suite("HWPX Generator Regression Suite", () => {
         // wide 1600x400 -> constrained by maxW=42520 -> 42520x10630
         assert.deepStrictEqual(curSizes[2], { width: 42520, height: 10630 });
     });
+
+    test("renders endnotes with LEFT alignment, autoTabLeft tabPrIDRef, and <hp:tab> inside <hp:t>", async () => {
+        const { sectionXml, headerXml } = await generateHwpxArchive(
+            `본문 참조[^1]입니다.\n\n[^1]: 아주 긴 URL https://example.com/very/long/path/with/many/segments`,
+        );
+
+        assert.ok(/<hp:t>\[1\]<hp:tab\b[^>]*\/><\/hp:t>/.test(sectionXml));
+        const refParaPr = headerXml.match(/<hh:paraPr\s+id="1050"([^>]*)>([\s\S]*?)<\/hh:paraPr>/);
+        assert.ok(refParaPr, "paraPr 1050 should exist");
+        assert.ok(/\btabPrIDRef="1"/.test(refParaPr![1]), "paraPr 1050 should reference autoTabLeft tabPrIDRef");
+        assert.ok(/<hh:align\b[^>]*horizontal="LEFT"/.test(refParaPr![2]));
+        assert.ok(refParaPr![2].includes('<hc:intent value="-1800" unit="HWPUNIT"/>'));
+        assert.ok(refParaPr![2].includes('<hc:left value="1800" unit="HWPUNIT"/>'));
+    });
+
+    test("applies markdown table alignments (header center default, body left default) and splits <br/> into separate <hp:p>", async () => {
+        const { sectionXml, headerXml } = await generateHwpxArchive(
+            `| L | C | R | D |\n| :--- | :---: | ---: | --- |\n| a<br/>b | c | d | e |`,
+        );
+
+        const findIdByAlign = (align: string): Set<string> => {
+            const matches =
+                headerXml.match(new RegExp(`<hh:paraPr\\s+id="(\\d+)"[^>]*>(?:(?!<\\/hh:paraPr>)[\\s\\S])*?<hh:align\\s+horizontal="${align}"`, "g")) ??
+                [];
+            return new Set(matches.map((m) => m.match(/id="(\d+)"/)![1]));
+        };
+
+        const leftIds = findIdByAlign("LEFT");
+        const centerIds = findIdByAlign("CENTER");
+        const rightIds = findIdByAlign("RIGHT");
+
+        const cells = sectionXml.match(/<hp:tc\b[\s\S]*?<\/hp:tc>/g) ?? [];
+        assert.strictEqual(cells.length, 8);
+
+        // Header row: L (left), C (center), R (right), D (default center)
+        assert.ok(leftIds.has(cells[0].match(/paraPrIDRef="(\d+)"/)![1]));
+        assert.ok(centerIds.has(cells[1].match(/paraPrIDRef="(\d+)"/)![1]));
+        assert.ok(rightIds.has(cells[2].match(/paraPrIDRef="(\d+)"/)![1]));
+        assert.ok(centerIds.has(cells[3].match(/paraPrIDRef="(\d+)"/)![1]));
+
+        // Body row: cell 4 has a<br/>b -> 2 separate <hp:p> paragraphs, LEFT aligned
+        const body0Paras = cells[4].match(/<hp:p\b[^>]*paraPrIDRef="(\d+)"/g) ?? [];
+        assert.strictEqual(body0Paras.length, 2);
+        assert.ok(leftIds.has(body0Paras[0].match(/paraPrIDRef="(\d+)"/)![1]));
+        assert.ok(centerIds.has(cells[5].match(/paraPrIDRef="(\d+)"/)![1]));
+        assert.ok(rightIds.has(cells[6].match(/paraPrIDRef="(\d+)"/)![1]));
+        assert.ok(leftIds.has(cells[7].match(/paraPrIDRef="(\d+)"/)![1]));
+
+        // Validate XML structure with xmllint
+        const tempSecPath = path.join(os.tmpdir(), `md2hwpx-step5-sec-${Date.now()}.xml`);
+        const tempHdrPath = path.join(os.tmpdir(), `md2hwpx-step5-hdr-${Date.now()}.xml`);
+        fs.writeFileSync(tempSecPath, sectionXml);
+        fs.writeFileSync(tempHdrPath, headerXml);
+        try {
+            require("child_process").execFileSync("xmllint", ["--noout", tempSecPath], { stdio: "pipe" });
+            require("child_process").execFileSync("xmllint", ["--noout", tempHdrPath], { stdio: "pipe" });
+        } finally {
+            if (fs.existsSync(tempSecPath)) {
+                fs.unlinkSync(tempSecPath);
+            }
+            if (fs.existsSync(tempHdrPath)) {
+                fs.unlinkSync(tempHdrPath);
+            }
+        }
+    });
 });

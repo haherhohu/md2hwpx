@@ -115,7 +115,8 @@ export class TableRenderer {
         }
         rows.push(...bodyRows);
 
-        return this.createTableXml(rows, containerWidth, token.caption, token.captionSide ?? "TOP");
+        const align = Array.isArray(token.align) ? token.align : [];
+        return this.createTableXml(rows, containerWidth, align, token.caption, token.captionSide ?? "TOP");
     }
 
     public renderCalloutXml(innerXml: string, containerWidth: number): string {
@@ -149,6 +150,7 @@ export class TableRenderer {
     private createTableXml(
         rows: TableCellToken[][],
         containerWidth: number,
+        align: Array<"left" | "center" | "right" | null>,
         captionText?: string,
         captionSide: "TOP" | "BOTTOM" = "TOP",
     ): string {
@@ -202,6 +204,18 @@ export class TableRenderer {
 
                 const effectiveLines = nonEmptyLines.length > 0 ? nonEmptyLines : [[]];
                 const cellAvailableWidth = Math.max(2000, cellWidth - 560);
+                const colAlign = align[colIndex] ?? null;
+                const cellParaPrId = isHeaderRow
+                    ? colAlign === "left"
+                        ? paraPrIds.left
+                        : colAlign === "right"
+                          ? paraPrIds.right
+                          : paraPrIds.center
+                    : colAlign === "center"
+                      ? paraPrIds.center
+                      : colAlign === "right"
+                        ? paraPrIds.right
+                        : paraPrIds.left;
                 const cellParagraphsXml = effectiveLines
                     .map((lineToks) =>
                         this.callbacks.createParagraphTag(
@@ -212,7 +226,7 @@ export class TableRenderer {
                                       cellAvailableWidth,
                                   )
                                 : this.callbacks.createRunXml("", defaultCellStyleId),
-                            paraPrIds.center,
+                            cellParaPrId,
                         ),
                     )
                     .join("");
