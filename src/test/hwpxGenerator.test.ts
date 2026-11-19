@@ -103,7 +103,20 @@ suite("HWPX Generator Regression Suite", () => {
         assert.ok(sectionXml.includes("[Image] alt text (./assets/sample.png)"));
         const manifestMatches = contentHpf.match(/id="mdimg_1"/g) || [];
         assert.strictEqual(manifestMatches.length, 1);
-        assert.ok(zip.file("BinData/mdimg_1.png"));
+        const pngFile = zip.file("BinData/mdimg_1.png");
+        assert.ok(pngFile);
+        const pngBuf = await pngFile!.async("nodebuffer");
+        assert.strictEqual(pngBuf[0], 0x89);
+        assert.strictEqual(pngBuf[1], 0x50);
+        assert.strictEqual(pngBuf[2], 0x4e);
+        assert.strictEqual(pngBuf[3], 0x47);
+        assert.ok(pngBuf.length > 2000, `Expected visible placeholder PNG (> 2000 bytes), got ${pngBuf.length}`);
+        const curSzMatch = sectionXml.match(/<hp:curSz width="(\d+)" height="(\d+)"\/>/);
+        assert.ok(curSzMatch);
+        const picW = parseInt(curSzMatch![1], 10);
+        const picH = parseInt(curSzMatch![2], 10);
+        assert.strictEqual(picW, 42520);
+        assert.ok(Math.abs(picH / picW - 9 / 16) < 0.01, `Expected ~16:9 aspect ratio, got ${picW}x${picH}`);
     });
 
     test("converts inline SVG HTML blocks to HWPX <hp:pic> nodes with 300 DPI .png BinData embedding and oriented markers", async () => {

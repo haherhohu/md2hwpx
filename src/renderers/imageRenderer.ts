@@ -227,7 +227,7 @@ export class ImageRenderer {
             } else {
                 data = fs.readFileSync(resolvedFile);
             }
-        } else if (sourceExt === ".svg") {
+        } else {
             ext = ".png";
             mimeType = "image/png";
             const placeholderSvg = this.createPlaceholderSvg(source);
