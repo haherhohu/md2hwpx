@@ -10,6 +10,11 @@ export interface EmbeddedImageItem {
     data: Buffer;
 }
 
+export interface TableCellToken {
+    text: string;
+    tokens?: MarkdownToken[];
+}
+
 export interface MarkdownToken {
     type: string;
     raw?: string;
@@ -19,8 +24,9 @@ export interface MarkdownToken {
     ordered?: boolean;
     start?: number;
     items?: MarkdownToken[];
-    header?: unknown[];
-    rows?: unknown[][];
+    header?: TableCellToken[] | unknown[];
+    rows?: TableCellToken[][] | unknown[][];
+    align?: Array<"left" | "center" | "right" | null>;
     href?: string;
     title?: string;
     lang?: string;

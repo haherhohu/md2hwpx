@@ -1,12 +1,19 @@
 import { marked } from "marked";
-import { FootnoteDefinition, MarkdownToken } from "./types";
+import { FootnoteDefinition, MarkdownToken, TableCellToken } from "./types";
 import { asTokenArray } from "./tokenUtils";
+
+const FENCE_OPEN_REGEX = /^\s*(`{3,}|~{3,})/;
+const TABLE_START_ROW_REGEX = /^\s{0,3}\|/;
+const TABLE_DELIMITER_ROW_REGEX = /^\s{0,3}\|?[\s:]*-{1,}[\s:]*(?:\|[\s:]*-{1,}[\s:]*)+\|?\s*$/;
+const BLOCKQUOTE_LINE_REGEX = /^\s*>/;
+const PIPE_TABLE_INTERRUPT_REGEX = /^(?:#{1,6}\s|>|\s*(?:[-*+]|\d+[.)])\s|```|~~~|(?:\*\s*){3,}$|(?:-\s*){3,}$|(?:_\s*){3,}$)/;
 
 export class MarkdownPipeline {
     public parseMarkdown(mdContent: string): MarkdownToken[] {
         const { cleanedMarkdown, footnoteDefs } = this.extractFootnoteDefinitions(mdContent);
-        const preparedMarkdown = this.protectMultiLineHtmlBlocks(cleanedMarkdown);
-        const tokens = marked.lexer(preparedMarkdown) as unknown as MarkdownToken[];
+        const protectedHtmlMarkdown = this.protectMultiLineHtmlBlocks(cleanedMarkdown);
+        const boundedMarkdown = this.ensureBlockBoundaries(protectedHtmlMarkdown);
+        const tokens = marked.lexer(boundedMarkdown) as unknown as MarkdownToken[];
 
         if (footnoteDefs.length > 0) {
             tokens.push({
@@ -75,6 +82,85 @@ export class MarkdownPipeline {
         }
 
         return spacedResult;
+    }
+
+    public ensureBlockBoundaries(mdContent: string): string {
+        const lines = mdContent.split(/\r?\n/);
+        const output: string[] = [];
+        let activeFenceChar: string | undefined;
+        let activeFenceLen = 0;
+        let inPipeTable = false;
+
+        const pushBlankIfNeeded = () => {
+            if (output.length > 0 && output[output.length - 1].trim() !== "") {
+                output.push("");
+            }
+        };
+
+        for (let i = 0; i < lines.length; i += 1) {
+            const line = lines[i];
+            const trimmed = line.trim();
+
+            const fenceMatch = line.match(FENCE_OPEN_REGEX);
+            if (!activeFenceChar && fenceMatch) {
+                if (inPipeTable) {
+                    pushBlankIfNeeded();
+                    inPipeTable = false;
+                }
+                activeFenceChar = fenceMatch[1][0];
+                activeFenceLen = fenceMatch[1].length;
+                output.push(line);
+                continue;
+            }
+            if (activeFenceChar) {
+                const closeFenceRegex = new RegExp(`^\\s*${activeFenceChar}{${activeFenceLen},}\\s*$`);
+                if (closeFenceRegex.test(line)) {
+                    activeFenceChar = undefined;
+                    activeFenceLen = 0;
+                }
+                output.push(line);
+                continue;
+            }
+
+            if (inPipeTable) {
+                if (trimmed === "") {
+                    inPipeTable = false;
+                    output.push(line);
+                    continue;
+                }
+                if (!PIPE_TABLE_INTERRUPT_REGEX.test(trimmed) && trimmed.includes("|")) {
+                    output.push(line);
+                    continue;
+                }
+                pushBlankIfNeeded();
+                inPipeTable = false;
+            }
+
+            const nextLine = i + 1 < lines.length ? lines[i + 1] : undefined;
+            if (
+                TABLE_START_ROW_REGEX.test(line) &&
+                !BLOCKQUOTE_LINE_REGEX.test(line) &&
+                nextLine !== undefined &&
+                TABLE_DELIMITER_ROW_REGEX.test(nextLine)
+            ) {
+                pushBlankIfNeeded();
+                inPipeTable = true;
+                output.push(line);
+                continue;
+            }
+
+            output.push(line);
+
+            // Prevent CommonMark lazy continuation of blockquotes by unquoted trailing paragraphs/tables
+            if (BLOCKQUOTE_LINE_REGEX.test(line) && nextLine !== undefined) {
+                const nextTrimmed = nextLine.trim();
+                if (nextTrimmed !== "" && !BLOCKQUOTE_LINE_REGEX.test(nextLine)) {
+                    output.push("");
+                }
+            }
+        }
+
+        return output.join("\n");
     }
 
     private extractFootnoteDefinitions(mdContent: string): {
@@ -159,47 +245,21 @@ export class MarkdownPipeline {
         }
 
         if (token.type === "paragraph") {
-            return this.normalizeParagraphToken(token);
+            return this.normalizeParagraphToken(token, "paragraph");
         }
 
         if (token.type === "blockquote") {
-            const rawChildren = asTokenArray(token.tokens);
-            const normalizedChildren = rawChildren
-                .flatMap((child) => this.normalizeToken(child))
-                .flatMap((child) => this.convertHtmlTableToken(child));
-            const quoteText = typeof token.text === "string" ? token.text.trimStart() : "";
-            const startsWithMarkdownTable = quoteText.startsWith("|");
-            const containsHtmlTable = rawChildren.some((child) => this.isHtmlTableToken(child));
-
-            if ((startsWithMarkdownTable || containsHtmlTable) && normalizedChildren.some((child) => child.type === "table")) {
-                const result: MarkdownToken[] = [];
-                let quoteBuffer: MarkdownToken[] = [];
-
-                const flushQuoteBuffer = () => {
-                    const nonSpaceQuotes = quoteBuffer.filter((q) => q.type !== "space");
-                    if (nonSpaceQuotes.length > 0) {
-                        result.push({ ...token, tokens: quoteBuffer });
-                    }
-                    quoteBuffer = [];
-                };
-
-                for (const child of normalizedChildren) {
-                    if (child.type === "table") {
-                        flushQuoteBuffer();
-                        result.push(child);
-                    } else {
-                        quoteBuffer.push(child);
-                    }
-                }
-                flushQuoteBuffer();
-                return result;
-            }
-            return [{ ...token, tokens: normalizedChildren }];
+            return this.normalizeBlockquoteToken(token);
         }
 
         if (token.type === "list") {
             const items = asTokenArray(token.items).map((item) => {
-                const normalizedItemChildren = asTokenArray(item.tokens).flatMap((child) => this.normalizeToken(child));
+                const normalizedItemChildren = asTokenArray(item.tokens).flatMap((child) => {
+                    if (child.type === "text" && Array.isArray(child.tokens)) {
+                        return this.normalizeParagraphToken(child, "text");
+                    }
+                    return this.normalizeToken(child);
+                });
                 return { ...item, tokens: normalizedItemChildren };
             });
             return [{ ...token, items }];
@@ -225,6 +285,99 @@ export class MarkdownPipeline {
         }
 
         return [token];
+    }
+
+    private normalizeBlockquoteToken(token: MarkdownToken): MarkdownToken[] {
+        const rawChildren = asTokenArray(token.tokens);
+        const normalizedChildren = rawChildren
+            .flatMap((child) => this.normalizeToken(child))
+            .flatMap((child) => this.convertHtmlTableToken(child));
+
+        const quoteText = typeof token.text === "string" ? token.text.trimStart() : "";
+        const startsWithMarkdownTable = quoteText.startsWith("|");
+        const containsHtmlTable = rawChildren.some((child) => this.isHtmlTableToken(child));
+        const hasTable = normalizedChildren.some((child) => child.type === "table");
+
+        const unquotedRawLines = new Set<string>();
+        if (typeof token.raw === "string") {
+            for (const rawLine of token.raw.split(/\r?\n/)) {
+                const trimmed = rawLine.trim();
+                if (trimmed !== "" && !BLOCKQUOTE_LINE_REGEX.test(rawLine)) {
+                    unquotedRawLines.add(trimmed);
+                }
+            }
+        }
+
+        const isChildUnquoted = (child: MarkdownToken, seenTable: boolean): boolean => {
+            const childFirstLine = this.getTokenText(child)
+                .split(/\r?\n/)
+                .map((l) => l.trim())
+                .find((l) => l.length > 0);
+            if (childFirstLine && unquotedRawLines.has(childFirstLine)) {
+                return true;
+            }
+            // If raw is unavailable (e.g. synthetic token), never re-wrap paragraphs appearing after a table
+            if (typeof token.raw !== "string" && seenTable) {
+                return true;
+            }
+            return false;
+        };
+
+        if ((startsWithMarkdownTable || containsHtmlTable) && hasTable) {
+            const result: MarkdownToken[] = [];
+            let quoteBuffer: MarkdownToken[] = [];
+            let seenTable = false;
+
+            const flushQuoteBuffer = () => {
+                const nonSpaceQuotes = quoteBuffer.filter((q) => q.type !== "space");
+                if (nonSpaceQuotes.length > 0) {
+                    result.push({ ...token, tokens: quoteBuffer });
+                }
+                quoteBuffer = [];
+            };
+
+            for (const child of normalizedChildren) {
+                if (child.type === "table") {
+                    flushQuoteBuffer();
+                    seenTable = true;
+                    result.push(child);
+                } else if (child.type !== "space" && isChildUnquoted(child, seenTable)) {
+                    flushQuoteBuffer();
+                    result.push(child);
+                } else {
+                    quoteBuffer.push(child);
+                }
+            }
+            flushQuoteBuffer();
+            return result;
+        }
+
+        // Also separate any unquoted lazy-continuation trailing blocks outside normal blockquotes
+        if (unquotedRawLines.size > 0) {
+            const result: MarkdownToken[] = [];
+            let quoteBuffer: MarkdownToken[] = [];
+
+            const flushQuoteBuffer = () => {
+                const nonSpaceQuotes = quoteBuffer.filter((q) => q.type !== "space");
+                if (nonSpaceQuotes.length > 0) {
+                    result.push({ ...token, tokens: quoteBuffer });
+                }
+                quoteBuffer = [];
+            };
+
+            for (const child of normalizedChildren) {
+                if (child.type !== "space" && isChildUnquoted(child, false)) {
+                    flushQuoteBuffer();
+                    result.push(child);
+                } else {
+                    quoteBuffer.push(child);
+                }
+            }
+            flushQuoteBuffer();
+            return result;
+        }
+
+        return [{ ...token, tokens: normalizedChildren }];
     }
 
     private bindCaptionsToTablesAndImages(tokens: MarkdownToken[]): MarkdownToken[] {
@@ -256,11 +409,11 @@ export class MarkdownPipeline {
                         continue;
                     }
                 }
-                if (tok.type === "paragraph" || tok.type === "html") {
+                if (tok.type === "html") {
                     tok.isCaption = true;
                     tok.text = capText;
                     tok.raw = capText;
-                    tok.tokens = undefined;
+                    tok.tokens = marked.Lexer.lexInline(capText) as unknown as MarkdownToken[];
                     tok.caption = capText;
                 }
                 continue;
@@ -340,9 +493,24 @@ export class MarkdownPipeline {
         return undefined;
     }
 
-    private normalizeParagraphToken(token: MarkdownToken): MarkdownToken[] {
-        const text = typeof token.text === "string" ? token.text : typeof token.raw === "string" ? token.raw : "";
-        const lines = text.split(/\r?\n/);
+    private normalizeParagraphToken(token: MarkdownToken, targetType: "paragraph" | "text"): MarkdownToken[] {
+        const inlineTokens = asTokenArray(token.tokens);
+        if (inlineTokens.length === 0 || !inlineTokens.some((child) => child.type === "image")) {
+            return [token];
+        }
+
+        const lines = this.splitTopLevelInlineTokensByLine(inlineTokens);
+        const isStandaloneImageLine = (lineToks: MarkdownToken[]): MarkdownToken | undefined => {
+            const nonSpace = lineToks.filter((t) => !(t.type === "text" && (t.text ?? t.raw ?? "").trim() === ""));
+            if (nonSpace.length === 1 && nonSpace[0].type === "image") {
+                return nonSpace[0];
+            }
+            return undefined;
+        };
+
+        if (!lines.some((lineToks) => isStandaloneImageLine(lineToks) !== undefined)) {
+            return [token];
+        }
 
         const extractAltCaption = (alt: string, title?: string): string | undefined => {
             const candidate = (title || alt).trim();
@@ -352,60 +520,45 @@ export class MarkdownPipeline {
             return this.normalizeCaptionText(candidate);
         };
 
-        const imageLineRegex = /^\s*!\[(.*)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)\s*$/;
-        if (lines.length === 1) {
-            const singleMatch = lines[0].match(imageLineRegex);
-            if (singleMatch) {
-                const altText = singleMatch[1].trim();
-                const href = singleMatch[2].trim();
-                const title = singleMatch[3]?.trim();
-                const autoCaption = extractAltCaption(altText, title);
-                return [
-                    {
-                        type: "image",
-                        raw: lines[0].trim(),
-                        text: altText,
-                        href,
-                        title,
-                        caption: autoCaption,
-                        captionSide: autoCaption ? "BOTTOM" : undefined,
-                    },
-                ];
-            }
-            return [token];
-        }
-
-        if (!lines.some((line) => imageLineRegex.test(line))) {
-            return [token];
-        }
-
         const result: MarkdownToken[] = [];
-        let paragraphLines: string[] = [];
+        let bufferedLines: MarkdownToken[][] = [];
 
-        const flushParagraphLines = () => {
-            const joined = paragraphLines.join("\n").trim();
-            if (joined.length > 0) {
-                const subTokens = marked.lexer(joined) as unknown as MarkdownToken[];
-                for (const subToken of subTokens) {
-                    if (subToken.type !== "space") {
-                        result.push(subToken);
-                    }
-                }
+        const flushParagraphBuffer = () => {
+            if (bufferedLines.length === 0) {
+                return;
             }
-            paragraphLines = [];
+            const mergedTokens: MarkdownToken[] = [];
+            bufferedLines.forEach((lineToks, idx) => {
+                if (idx > 0) {
+                    mergedTokens.push({ type: "text", raw: "\n", text: "\n" });
+                }
+                mergedTokens.push(...lineToks);
+            });
+            const nonEmpty = mergedTokens.some((t) => t.type !== "text" || (t.text ?? t.raw ?? "").trim() !== "");
+            if (nonEmpty) {
+                const rawJoined = mergedTokens.map((t) => t.raw ?? t.text ?? "").join("");
+                const textJoined = mergedTokens.map((t) => t.text ?? t.raw ?? "").join("");
+                result.push({
+                    type: targetType,
+                    raw: rawJoined.trim(),
+                    text: textJoined.trim(),
+                    tokens: mergedTokens,
+                });
+            }
+            bufferedLines = [];
         };
 
-        for (const line of lines) {
-            const imgMatch = line.match(imageLineRegex);
-            if (imgMatch) {
-                flushParagraphLines();
-                const altText = imgMatch[1].trim();
-                const href = imgMatch[2].trim();
-                const title = imgMatch[3]?.trim();
+        for (const lineToks of lines) {
+            const standaloneImg = isStandaloneImageLine(lineToks);
+            if (standaloneImg) {
+                flushParagraphBuffer();
+                const altText = typeof standaloneImg.text === "string" ? standaloneImg.text.trim() : "";
+                const href = typeof standaloneImg.href === "string" ? standaloneImg.href.trim() : "";
+                const title = typeof standaloneImg.title === "string" ? standaloneImg.title.trim() : undefined;
                 const autoCaption = extractAltCaption(altText, title);
                 result.push({
                     type: "image",
-                    raw: line.trim(),
+                    raw: typeof standaloneImg.raw === "string" ? standaloneImg.raw : "",
                     text: altText,
                     href,
                     title,
@@ -413,12 +566,44 @@ export class MarkdownPipeline {
                     captionSide: autoCaption ? "BOTTOM" : undefined,
                 });
             } else {
-                paragraphLines.push(line);
+                bufferedLines.push(lineToks);
             }
         }
-        flushParagraphLines();
+        flushParagraphBuffer();
 
         return result.length > 0 ? result : [token];
+    }
+
+    private splitTopLevelInlineTokensByLine(inlineTokens: MarkdownToken[]): MarkdownToken[][] {
+        const lines: MarkdownToken[][] = [[]];
+        for (const tok of inlineTokens) {
+            if (tok.type === "br") {
+                lines.push([]);
+                continue;
+            }
+            if (tok.type === "text" && (!Array.isArray(tok.tokens) || tok.tokens.length === 0)) {
+                const rawStr = typeof tok.raw === "string" ? tok.raw : typeof tok.text === "string" ? tok.text : "";
+                const textStr = typeof tok.text === "string" ? tok.text : rawStr;
+                if (rawStr.includes("\n") || textStr.includes("\n")) {
+                    const rawParts = rawStr.split(/\r?\n/);
+                    const textParts = textStr.split(/\r?\n/);
+                    const count = Math.max(rawParts.length, textParts.length);
+                    for (let idx = 0; idx < count; idx += 1) {
+                        if (idx > 0) {
+                            lines.push([]);
+                        }
+                        const rPart = rawParts[idx] ?? "";
+                        const tPart = textParts[idx] ?? rPart;
+                        if (rPart.length > 0 || tPart.length > 0) {
+                            lines[lines.length - 1].push({ type: "text", raw: rPart, text: tPart });
+                        }
+                    }
+                    continue;
+                }
+            }
+            lines[lines.length - 1].push(tok);
+        }
+        return lines;
     }
 
     private isHtmlTableToken(token: MarkdownToken): boolean {
@@ -475,12 +660,17 @@ export class MarkdownPipeline {
             return [token];
         }
 
+        const makeCell = (text: string): TableCellToken => ({
+            text,
+            tokens: marked.Lexer.lexInline(text) as unknown as MarkdownToken[],
+        });
+
         const [header, ...bodyRows] = parsedRows;
         return [
             {
                 type: "table",
-                header: header.map((text) => ({ text })),
-                rows: bodyRows.map((row) => row.map((text) => ({ text }))),
+                header: header.map((text) => makeCell(text)),
+                rows: bodyRows.map((row) => row.map((text) => makeCell(text))),
                 caption: extractedCaption,
                 captionSide: extractedCaption ? "TOP" : undefined,
             },

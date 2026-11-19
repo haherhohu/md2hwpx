@@ -308,4 +308,44 @@ suite("HWPX Generator Regression Suite", () => {
         assert.ok(sectionXml.includes("※"));
         assert.ok(!sectionXml.includes("\\*"));
     });
+
+    test("prevents blockquote lazy continuation from swallowing trailing unquoted paragraphs", () => {
+        const pipeline = new MarkdownPipeline();
+        const tokens = pipeline.parseMarkdown(`> quoted line\nunquoted paragraph`);
+        const normalized = pipeline.normalizeTokens(tokens);
+
+        assert.strictEqual(normalized.filter((t) => t.type === "blockquote").length, 1);
+        assert.strictEqual(normalized.filter((t) => t.type === "paragraph").length, 1);
+    });
+
+    test("separates pipe tables from adjacent paragraphs without blank lines and avoids fake callouts", () => {
+        const pipeline = new MarkdownPipeline();
+        const tokens = pipeline.parseMarkdown(`Intro paragraph\n| A | B |\n| - | - |\n| 1 | 2 |\nTrailing paragraph`);
+        const normalized = pipeline.normalizeTokens(tokens);
+
+        assert.strictEqual(normalized.filter((t) => t.type === "table").length, 1);
+        assert.strictEqual(normalized.filter((t) => t.type === "blockquote").length, 0);
+        assert.strictEqual(normalized.filter((t) => t.type === "paragraph").length, 2);
+    });
+
+    test("preserves inline AST tokens on ordinary body paragraphs during caption binding", () => {
+        const pipeline = new MarkdownPipeline();
+        const tokens = pipeline.parseMarkdown(`[표 1] 본문에서 참조하는 설명이며 뒤에 표가 없습니다.`);
+        const normalized = pipeline.normalizeTokens(tokens);
+        const para = normalized.find((t) => t.type === "paragraph");
+
+        assert.ok(para, "Expected ordinary paragraph to remain a paragraph");
+        assert.ok(Array.isArray(para!.tokens) && para!.tokens!.length > 0, "Paragraph tokens must not be cleared");
+    });
+
+    test("promotes standalone image with brackets in alt and parens in href into block image token", () => {
+        const pipeline = new MarkdownPipeline();
+        const tokens = pipeline.parseMarkdown(`![그림 [1]](assets/diagram(v2).png)`);
+        const normalized = pipeline.normalizeTokens(tokens);
+        const img = normalized.find((t) => t.type === "image");
+
+        assert.ok(img, "Expected standalone image token");
+        assert.strictEqual(img!.href, "assets/diagram(v2).png");
+        assert.strictEqual(img!.text, "그림 [1]");
+    });
 });
