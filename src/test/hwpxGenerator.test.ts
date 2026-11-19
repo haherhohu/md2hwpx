@@ -414,4 +414,43 @@ suite("HWPX Generator Regression Suite", () => {
         );
         assert.ok(codeParaMatch && leftIds.has(codeParaMatch[1]));
     });
+
+    test("keeps small PNG images at 100% original size and preserves aspect ratio for oversized wide/portrait PNGs", async () => {
+        const makePng = (w: number, h: number): Buffer => {
+            const buf = Buffer.alloc(33);
+            Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(buf, 0);
+            buf.writeUInt32BE(13, 8);
+            buf.write("IHDR", 12, "ascii");
+            buf.writeUInt32BE(w, 16);
+            buf.writeUInt32BE(h, 20);
+            buf[24] = 8;
+            buf[25] = 2;
+            return buf;
+        };
+
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "md2hwpx-img-size-"));
+        fs.writeFileSync(path.join(tempDir, "small.png"), makePng(100, 80));
+        fs.writeFileSync(path.join(tempDir, "portrait.png"), makePng(1000, 2000));
+        fs.writeFileSync(path.join(tempDir, "wide.png"), makePng(1600, 400));
+
+        const md = `![small](small.png)\n\n![portrait](portrait.png)\n\n![wide](wide.png)`;
+        const outputPath = path.join(tempDir, "out.hwpx");
+        const templatePath = path.resolve(__dirname, "../../template.hwpx");
+        await new HwpxGenerator().generate(md, templatePath, outputPath, tempDir);
+
+        const zip = await JSZip.loadAsync(fs.readFileSync(outputPath));
+        const sectionXml = await zip.file("Contents/section0.xml")!.async("string");
+        const curSizes = Array.from(sectionXml.matchAll(/<hp:curSz\s+width="(\d+)"\s+height="(\d+)"\/>/g)).map((m) => ({
+            width: parseInt(m[1], 10),
+            height: parseInt(m[2], 10),
+        }));
+
+        assert.strictEqual(curSizes.length, 3);
+        // small 100x80 -> 7500x6000 (not upscaled to 42520)
+        assert.deepStrictEqual(curSizes[0], { width: 7500, height: 6000 });
+        // portrait 1000x2000 -> constrained by maxH=56000 -> 28000x56000
+        assert.deepStrictEqual(curSizes[1], { width: 28000, height: 56000 });
+        // wide 1600x400 -> constrained by maxW=42520 -> 42520x10630
+        assert.deepStrictEqual(curSizes[2], { width: 42520, height: 10630 });
+    });
 });
