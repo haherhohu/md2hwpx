@@ -451,8 +451,8 @@ export class HwpxXmlRenderer {
         }
 
         for (const fn of this.footnotes) {
-            const bookmarkRun = `<hp:run><hp:ctrl><hp:bookmark name="ref_${fn.index}"/></hp:ctrl></hp:run>`;
-            const indexTabRun = `<hp:run><hp:t>[${fn.index}]<hp:tab width="1800" leader="0" type="0"/></hp:t></hp:run>`;
+            const bookmarkRun = `<hp:run charPrIDRef="0"><hp:ctrl><hp:bookmark name="ref_${fn.index}"/></hp:ctrl></hp:run>`;
+            const indexTabRun = `<hp:run charPrIDRef="0"><hp:t>[${fn.index}]<hp:tab width="2200" leader="0" type="0"/></hp:t></hp:run>`;
             const fnTokens = lexInlineMarkdown(preprocessKoreanBoundaries(fn.text));
             const bodyRuns = this.renderInlineTokens(fnTokens, { baseCharPrId: 0 });
             xml += this.createParagraphTag(`${bookmarkRun}${indexTabRun}${bodyRuns}`, this.styleRegistry.paraPrIds.reference);

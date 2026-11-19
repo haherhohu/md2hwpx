@@ -59,7 +59,7 @@ export class StyleRegistry {
         center: 0,
         left: 0,
         right: 0,
-        reference: 1050,
+        reference: 0,
     };
     public captionStyle: CaptionStyle = {
         styleId: 21,
@@ -331,8 +331,7 @@ export class StyleRegistry {
 
     private injectParagraphProperty(headerXml: string): string {
         let currentParaCnt = 0;
-        const has1050 = /<hh:paraPr\s+id="1050"\b/.test(headerXml);
-        const addedCount = has1050 ? 9 : 10;
+        const addedCount = 10;
 
         let updatedHeader = headerXml.replace(new RegExp(`<hh:paraProperties([^>]*)>`), (match, attrs) => {
             const itemCntMatch = attrs.match(/itemCnt="(\d+)"/);
@@ -353,7 +352,7 @@ export class StyleRegistry {
             center: currentParaCnt + 6,
             left: currentParaCnt + 7,
             right: currentParaCnt + 8,
-            reference: 1050,
+            reference: currentParaCnt + 9,
         };
 
         const baseParaMatch = updatedHeader.match(new RegExp(`<hh:paraPr\\s+id="0"([^>]*)>([\\s\\S]*?)<\\/hh:paraPr>`));
@@ -361,52 +360,68 @@ export class StyleRegistry {
             return updatedHeader;
         }
 
-        const attrs = baseParaMatch[1];
+        const rawAttrs = baseParaMatch[1];
+        const normalizedAttrs = rawAttrs === "" || rawAttrs.startsWith(" ") ? rawAttrs : ` ${rawAttrs}`;
         const inner = baseParaMatch[2];
 
-        const autoTabMatch = updatedHeader.match(/<hh:tabPr\b[^>]*\bid="(\d+)"[^>]*\bautoTabLeft="1"/);
-        const autoTabLeftId = autoTabMatch ? autoTabMatch[1] : "0";
+        let autoTabLeftId = "0";
+        for (const tabTagMatch of updatedHeader.matchAll(/<hh:tabPr\b([^>]*)>/g)) {
+            const tagAttrs = tabTagMatch[1];
+            if (/\bautoTabLeft="(?:1|true)"/i.test(tagAttrs)) {
+                const idMatch = tagAttrs.match(/\bid="(\d+)"/);
+                if (idMatch) {
+                    autoTabLeftId = idMatch[1];
+                    break;
+                }
+            }
+        }
+
+        const makeMarginXml = (left: number, intent: number) =>
+            `<hh:margin><hc:intent value="${intent}" unit="HWPUNIT"/><hc:left value="${left}" unit="HWPUNIT"/><hc:right value="0" unit="HWPUNIT"/><hc:prev value="0" unit="HWPUNIT"/><hc:next value="0" unit="HWPUNIT"/></hh:margin>`;
 
         const setHangingMargin = (xmlStr: string, leftMargin: number, indentVal = -1200) => {
-            return xmlStr.replace(
-                /<hh:margin[^>]*>[\s\S]*?<\/hh:margin>/g,
-                `<hh:margin><hc:intent value="${indentVal}" unit="HWPUNIT"/><hc:left value="${leftMargin}" unit="HWPUNIT"/><hc:right value="0" unit="HWPUNIT"/><hc:prev value="0" unit="HWPUNIT"/><hc:next value="0" unit="HWPUNIT"/></hh:margin>`,
-            );
+            if (/<hp:case\b[^>]*HwpUnitChar[^>]*>[\s\S]*?<\/hp:case>/.test(xmlStr) && /<hp:default>[\s\S]*?<\/hp:default>/.test(xmlStr)) {
+                return xmlStr
+                    .replace(
+                        /(<hp:case\b[^>]*HwpUnitChar[^>]*>[\s\S]*?)<hh:margin[^>]*>[\s\S]*?<\/hh:margin>([\s\S]*?<\/hp:case>)/,
+                        `$1${makeMarginXml(leftMargin, indentVal)}$2`,
+                    )
+                    .replace(
+                        /(<hp:default>[\s\S]*?)<hh:margin[^>]*>[\s\S]*?<\/hh:margin>([\s\S]*?<\/hp:default>)/,
+                        `$1${makeMarginXml(leftMargin * 2, indentVal * 2)}$2`,
+                    );
+            }
+            return xmlStr.replace(/<hh:margin[^>]*>[\s\S]*?<\/hh:margin>/g, makeMarginXml(leftMargin, indentVal));
         };
 
         const centerInner = inner.replace(/<hh:align\b[^>]*\/>/, `<hh:align horizontal="CENTER" vertical="BASELINE"/>`);
         const leftInner = inner.replace(/<hh:align\b[^>]*\/>/, `<hh:align horizontal="LEFT" vertical="BASELINE"/>`);
         const rightInner = inner.replace(/<hh:align\b[^>]*\/>/, `<hh:align horizontal="RIGHT" vertical="BASELINE"/>`);
 
-        const refAttrs = /\btabPrIDRef="/.test(attrs)
-            ? attrs.replace(/\btabPrIDRef="[^"]*"/, `tabPrIDRef="${autoTabLeftId}"`)
-            : ` tabPrIDRef="${autoTabLeftId}"${attrs}`;
+        const refAttrs = /\btabPrIDRef="/.test(normalizedAttrs)
+            ? normalizedAttrs.replace(/\btabPrIDRef="[^"]*"/, `tabPrIDRef="${autoTabLeftId}"`)
+            : ` tabPrIDRef="${autoTabLeftId}"${normalizedAttrs}`;
 
         const refInner = setHangingMargin(
             inner
                 .replace(/<hh:align\b[^>]*\/>/, `<hh:align horizontal="LEFT" vertical="BASELINE"/>`)
                 .replace(/breakLatinWord="[^"]*"/g, `breakLatinWord="BREAK_WORD"`)
                 .replace(/breakNonLatinWord="[^"]*"/g, `breakNonLatinWord="BREAK_WORD"`),
-            1800,
-            -1800,
+            0,
+            -2200,
         );
 
-        const refParaPrDefinition = `<hh:paraPr id="1050"${refAttrs}>${refInner}</hh:paraPr>`;
-        if (has1050) {
-            updatedHeader = updatedHeader.replace(/<hh:paraPr\s+id="1050"\b[^>]*>[\s\S]*?<\/hh:paraPr>/, refParaPrDefinition);
-        }
-
         const customParaPrs = `
-                    <hh:paraPr id="${this.paraPrIds.level1}" ${attrs}>${setHangingMargin(inner, 1200)}</hh:paraPr>
-                    <hh:paraPr id="${this.paraPrIds.level2}" ${attrs}>${setHangingMargin(inner, 2400)}</hh:paraPr>
-                    <hh:paraPr id="${this.paraPrIds.level3}" ${attrs}>${setHangingMargin(inner, 3600)}</hh:paraPr>
-                    <hh:paraPr id="${this.paraPrIds.level4}" ${attrs}>${setHangingMargin(inner, 4800)}</hh:paraPr>
-                    <hh:paraPr id="${this.paraPrIds.level5}" ${attrs}>${setHangingMargin(inner, 6000)}</hh:paraPr>
-                    <hh:paraPr id="${this.paraPrIds.level6}" ${attrs}>${setHangingMargin(inner, 7200)}</hh:paraPr>
-                    <hh:paraPr id="${this.paraPrIds.center}" ${attrs}>${centerInner}</hh:paraPr>
-                    <hh:paraPr id="${this.paraPrIds.left}" ${attrs}>${leftInner}</hh:paraPr>
-                    <hh:paraPr id="${this.paraPrIds.right}" ${attrs}>${rightInner}</hh:paraPr>
-                    ${has1050 ? "" : refParaPrDefinition}
+                    <hh:paraPr id="${this.paraPrIds.level1}"${normalizedAttrs}>${setHangingMargin(inner, 1200)}</hh:paraPr>
+                    <hh:paraPr id="${this.paraPrIds.level2}"${normalizedAttrs}>${setHangingMargin(inner, 2400)}</hh:paraPr>
+                    <hh:paraPr id="${this.paraPrIds.level3}"${normalizedAttrs}>${setHangingMargin(inner, 3600)}</hh:paraPr>
+                    <hh:paraPr id="${this.paraPrIds.level4}"${normalizedAttrs}>${setHangingMargin(inner, 4800)}</hh:paraPr>
+                    <hh:paraPr id="${this.paraPrIds.level5}"${normalizedAttrs}>${setHangingMargin(inner, 6000)}</hh:paraPr>
+                    <hh:paraPr id="${this.paraPrIds.level6}"${normalizedAttrs}>${setHangingMargin(inner, 7200)}</hh:paraPr>
+                    <hh:paraPr id="${this.paraPrIds.center}"${normalizedAttrs}>${centerInner}</hh:paraPr>
+                    <hh:paraPr id="${this.paraPrIds.left}"${normalizedAttrs}>${leftInner}</hh:paraPr>
+                    <hh:paraPr id="${this.paraPrIds.right}"${normalizedAttrs}>${rightInner}</hh:paraPr>
+                    <hh:paraPr id="${this.paraPrIds.reference}"${refAttrs}>${refInner}</hh:paraPr>
                     `;
 
         return updatedHeader.replace(new RegExp(`</hh:paraProperties>`), `${customParaPrs}</hh:paraProperties>`);

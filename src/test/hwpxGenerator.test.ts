@@ -200,7 +200,7 @@ suite("HWPX Generator Regression Suite", () => {
         assert.ok(sectionXml.includes('<hp:stringParam name="Category">HWPHYPERLINK_TYPE_URL</hp:stringParam>'));
     });
 
-    test("renders markdown footnote references as superscript bookmark links and endnotes with hanging indent paraPr 1050", async () => {
+    test("renders markdown footnote references as superscript bookmark links and endnotes with contiguous hanging indent paraPr", async () => {
         const { sectionXml, headerXml } = await generateHwpxArchive(
             `참고[^REF-01]입니다.\n\n[^REF-01]: **FAA 보고서** https://a.example`,
         );
@@ -212,9 +212,11 @@ suite("HWPX Generator Regression Suite", () => {
         assert.ok(sectionXml.includes("FAA 보고서"));
         assert.ok(sectionXml.includes("https://a.example"));
         assert.ok(sectionXml.includes("미주"));
-        assert.ok(sectionXml.includes('paraPrIDRef="1050"'));
-        assert.ok(headerXml.includes('<hh:supscript>1</hh:supscript>'));
-        assert.ok(headerXml.includes('<hc:intent value="-1800" unit="HWPUNIT"/>'));
+        assert.ok(!headerXml.includes('<hh:paraPr id="1050"'));
+        assert.ok(!sectionXml.includes('paraPrIDRef="1050"'));
+        assert.ok(sectionXml.includes('paraPrIDRef="29"'));
+        assert.ok(headerXml.includes("<hh:supscript>1</hh:supscript>"));
+        assert.ok(headerXml.includes('<hc:intent value="-2200" unit="HWPUNIT"/>'));
         assert.ok(!sectionXml.includes("[^REF-01]"));
     });
 
@@ -476,18 +478,51 @@ suite("HWPX Generator Regression Suite", () => {
         assert.deepStrictEqual(curSizes[2], { width: 42520, height: 10630 });
     });
 
-    test("renders endnotes with LEFT alignment, autoTabLeft tabPrIDRef, and <hp:tab> inside <hp:t>", async () => {
+    test("renders endnotes with contiguous paraPr IDs, LEFT alignment, autoTabLeft tabPrIDRef, HwpUnitChar hanging indent, and <hp:tab>", async () => {
         const { sectionXml, headerXml } = await generateHwpxArchive(
             `본문 참조[^1]입니다.\n\n[^1]: 아주 긴 URL https://example.com/very/long/path/with/many/segments`,
         );
 
-        assert.ok(/<hp:t>\[1\]<hp:tab\b[^>]*\/><\/hp:t>/.test(sectionXml));
-        const refParaPr = headerXml.match(/<hh:paraPr\s+id="1050"([^>]*)>([\s\S]*?)<\/hh:paraPr>/);
-        assert.ok(refParaPr, "paraPr 1050 should exist");
-        assert.ok(/\btabPrIDRef="1"/.test(refParaPr![1]), "paraPr 1050 should reference autoTabLeft tabPrIDRef");
+        assert.ok(sectionXml.includes('<hp:t>[1]<hp:tab width="2200" leader="0" type="0"/></hp:t>'));
+
+        const paraPropsMatch = headerXml.match(/<hh:paraProperties\b[^>]*itemCnt="(\d+)"[^>]*>/);
+        assert.ok(paraPropsMatch);
+        const itemCnt = parseInt(paraPropsMatch![1], 10);
+        const paraIds = Array.from(headerXml.matchAll(/<hh:paraPr\s+id="(\d+)"/g)).map((m) => parseInt(m[1], 10));
+        assert.strictEqual(paraIds.length, itemCnt);
+        paraIds.forEach((id, idx) => assert.strictEqual(id, idx, `Expected contiguous paraPr id ${idx}, got ${id}`));
+
+        const refParaPrId = itemCnt - 1;
+        assert.ok(sectionXml.includes(`paraPrIDRef="${refParaPrId}"`));
+        const refParaPr = headerXml.match(new RegExp(`<hh:paraPr\\s+id="${refParaPrId}"([^>]*)>([\\s\\S]*?)<\\/hh:paraPr>`));
+        assert.ok(refParaPr, `paraPr ${refParaPrId} should exist`);
+        assert.ok(/\btabPrIDRef="1"/.test(refParaPr![1]), "reference paraPr should reference autoTabLeft tabPrIDRef");
         assert.ok(/<hh:align\b[^>]*horizontal="LEFT"/.test(refParaPr![2]));
-        assert.ok(refParaPr![2].includes('<hc:intent value="-1800" unit="HWPUNIT"/>'));
-        assert.ok(refParaPr![2].includes('<hc:left value="1800" unit="HWPUNIT"/>'));
+        assert.ok(refParaPr![2].includes('breakLatinWord="BREAK_WORD"'));
+        assert.ok(refParaPr![2].includes('breakNonLatinWord="BREAK_WORD"'));
+
+        const hwpUnitCharCase = refParaPr![2].match(/<hp:case\b[^>]*HwpUnitChar[^>]*>([\s\S]*?)<\/hp:case>/);
+        const defaultCase = refParaPr![2].match(/<hp:default>([\s\S]*?)<\/hp:default>/);
+        assert.ok(hwpUnitCharCase && hwpUnitCharCase[1].includes('<hc:left value="0" unit="HWPUNIT"/>'));
+        assert.ok(hwpUnitCharCase && hwpUnitCharCase[1].includes('<hc:intent value="-2200" unit="HWPUNIT"/>'));
+        assert.ok(defaultCase && defaultCase[1].includes('<hc:left value="0" unit="HWPUNIT"/>'));
+        assert.ok(defaultCase && defaultCase[1].includes('<hc:intent value="-4400" unit="HWPUNIT"/>'));
+
+        const tempSecPath = path.join(os.tmpdir(), `md2hwpx-fn-sec-${Date.now()}.xml`);
+        const tempHdrPath = path.join(os.tmpdir(), `md2hwpx-fn-hdr-${Date.now()}.xml`);
+        fs.writeFileSync(tempSecPath, sectionXml);
+        fs.writeFileSync(tempHdrPath, headerXml);
+        try {
+            require("child_process").execFileSync("xmllint", ["--noout", tempSecPath], { stdio: "pipe" });
+            require("child_process").execFileSync("xmllint", ["--noout", tempHdrPath], { stdio: "pipe" });
+        } finally {
+            if (fs.existsSync(tempSecPath)) {
+                fs.unlinkSync(tempSecPath);
+            }
+            if (fs.existsSync(tempHdrPath)) {
+                fs.unlinkSync(tempHdrPath);
+            }
+        }
     });
 
     test("applies markdown table alignments (header center default, body left default) and splits <br/> into separate <hp:p>", async () => {
