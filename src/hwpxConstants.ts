@@ -13,6 +13,7 @@ export const HwpxLayout = {
     DEFAULT_ROW_HEIGHT: 1800,
     CAPTION_GAP: 850,
     HR_LINE_WIDTH: 141,
+    MIN_TABLE_COL_WIDTH: 3000,
 } as const;
 
 export const HwpxStyles = {

@@ -4,7 +4,7 @@ import { HwpxLayout } from "../hwpxConstants";
 import { lexInlineMarkdown } from "../pipeline/markdownExtensions";
 import { preprocessKoreanBoundaries, stripKoreanSentinels } from "../pipeline/koreanPreprocessor";
 import { splitInlineTokensIntoLines } from "./inlineRenderer";
-import { buildMergedTableGrid } from "./tableGridEngine";
+import { applyColumnWidthsToGrid, buildMergedTableGrid, MergedTableCell } from "./tableGridEngine";
 
 export interface TableRendererCallbacks {
     generateHwpId: () => number;
@@ -124,6 +124,7 @@ function trimEdgeWhitespaceTokens(tokens: MarkdownToken[]): MarkdownToken[] {
 
 interface TableShellOptions {
     numberingType: "NONE" | "TABLE";
+    pageBreak: "TABLE" | "CELL";
     repeatHeader: 0 | 1;
     rowCount: number;
     colCount: number;
@@ -161,7 +162,7 @@ export class TableRenderer {
         const m = HwpxLayout.CELL_MARGIN;
         const outY = HwpxLayout.TABLE_OUT_MARGIN_Y;
         const xml =
-            `<hp:tbl id="${tableId}" zOrder="0" numberingType="${options.numberingType}" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" pageBreak="CELL" repeatHeader="${options.repeatHeader}" rowCnt="${options.rowCount}" colCnt="${options.colCount}" cellSpacing="0" borderFillIDRef="${options.borderFillId}" noAdjust="1">` +
+            `<hp:tbl id="${tableId}" zOrder="0" numberingType="${options.numberingType}" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" pageBreak="${options.pageBreak}" repeatHeader="${options.repeatHeader}" rowCnt="${options.rowCount}" colCnt="${options.colCount}" cellSpacing="0" borderFillIDRef="${options.borderFillId}" noAdjust="1">` +
             `<hp:sz width="${options.width}" widthRelTo="ABSOLUTE" height="0" heightRelTo="ABSOLUTE" protect="0"/>` +
             `<hp:pos treatAsChar="0" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>` +
             `<hp:outMargin left="0" right="0" top="${outY}" bottom="${outY}"/>` +
@@ -194,6 +195,7 @@ export class TableRenderer {
 
         return this.wrapTableParagraph({
             numberingType: "NONE",
+            pageBreak: "CELL",
             repeatHeader: 0,
             rowCount: 1,
             colCount: 1,
@@ -212,8 +214,9 @@ export class TableRenderer {
     ): string {
         const safeRows: TableCellToken[][] = rows.length > 0 ? rows : [[{ text: "", tokens: [] }]];
         const rowCount = safeRows.length;
-        const columnMaxLengths = this.getColumnMaxLengths(safeRows);
-        const colCount = columnMaxLengths.length;
+        const colCount = Math.max(1, safeRows.reduce((max, row) => Math.max(max, row.length), 0));
+        const mergedGrid = buildMergedTableGrid(safeRows, new Array<number>(colCount).fill(1));
+        const columnMaxLengths = this.getColumnMaxLengthsFromGrid(mergedGrid, colCount);
         const totalTableWidth = Math.max(4000, containerWidth);
 
         const borderFillIds = this.callbacks.getBorderFillIds();
@@ -223,7 +226,7 @@ export class TableRenderer {
         const captionXml = captionText ? this.callbacks.createCaptionXml(captionText, captionSide, totalTableWidth) : "";
 
         const widths = this.calculateColumnWidths(columnMaxLengths, totalTableWidth);
-        const mergedGrid = buildMergedTableGrid(safeRows, widths);
+        applyColumnWidthsToGrid(mergedGrid, widths);
 
         let bodyXml = "";
         mergedGrid.forEach((row) => {
@@ -298,6 +301,7 @@ export class TableRenderer {
 
         return this.wrapTableParagraph({
             numberingType: "TABLE",
+            pageBreak: "TABLE",
             repeatHeader: 1,
             rowCount,
             colCount,
@@ -310,28 +314,106 @@ export class TableRenderer {
 
     private calculateColumnWidths(rowLengths: number[], totalAvailableWidth: number): number[] {
         const safeLengths = rowLengths.length > 0 ? rowLengths : [1];
+        const colCount = safeLengths.length;
         const weights = safeLengths.map((len) => Math.max(len + 2, 5));
-        const totalWeight = weights.reduce((a, b) => a + b, 0);
-        const widths = weights.map((w) => Math.floor(totalAvailableWidth * (w / totalWeight)));
+        const effectiveMin = Math.min(HwpxLayout.MIN_TABLE_COL_WIDTH, Math.floor(totalAvailableWidth / colCount));
+
+        const widths = new Array<number>(colCount).fill(0);
+        const fixed = new Array<boolean>(colCount).fill(false);
+        let remainingWidth = totalAvailableWidth;
+
+        while (true) {
+            let activeWeightSum = 0;
+            for (let i = 0; i < colCount; i += 1) {
+                if (!fixed[i]) {
+                    activeWeightSum += weights[i];
+                }
+            }
+            if (activeWeightSum <= 0) {
+                break;
+            }
+
+            const passRemainingWidth = remainingWidth;
+            let fixedAny = false;
+            for (let i = 0; i < colCount; i += 1) {
+                if (!fixed[i] && Math.floor((passRemainingWidth * weights[i]) / activeWeightSum) < effectiveMin) {
+                    fixed[i] = true;
+                    widths[i] = effectiveMin;
+                    remainingWidth -= effectiveMin;
+                    fixedAny = true;
+                }
+            }
+            if (!fixedAny) {
+                for (let i = 0; i < colCount; i += 1) {
+                    if (!fixed[i]) {
+                        widths[i] = Math.floor((passRemainingWidth * weights[i]) / activeWeightSum);
+                    }
+                }
+                break;
+            }
+        }
 
         const currentSum = widths.reduce((a, b) => a + b, 0);
-        widths[widths.length - 1] += totalAvailableWidth - currentSum;
+        const remainder = totalAvailableWidth - currentSum;
+        if (remainder !== 0) {
+            let widestIndex = 0;
+            for (let i = 1; i < colCount; i += 1) {
+                if (
+                    widths[i] > widths[widestIndex] ||
+                    (widths[i] === widths[widestIndex] && weights[i] > weights[widestIndex])
+                ) {
+                    widestIndex = i;
+                }
+            }
+            widths[widestIndex] += remainder;
+        }
         return widths;
     }
 
-    private getColumnMaxLengths(rows: TableCellToken[][]): number[] {
-        if (rows.length === 0) {
-            return [1];
+    private getColumnMaxLengthsFromGrid(grid: MergedTableCell[][], colCount: number): number[] {
+        const safeColCount = Math.max(colCount, 1);
+        const maxLengths = new Array<number>(safeColCount).fill(1);
+        const mergedCells: MergedTableCell[] = [];
+
+        // Pass 1: derive baseline widths from single-column cells only.
+        for (const row of grid) {
+            for (const gridCell of row) {
+                if (gridCell.absorbed) {
+                    continue;
+                }
+                if (gridCell.colSpan <= 1) {
+                    if (gridCell.col < safeColCount) {
+                        maxLengths[gridCell.col] = Math.max(
+                            maxLengths[gridCell.col],
+                            estimateCellMaxDisplayLength(gridCell.cell),
+                        );
+                    }
+                } else {
+                    mergedCells.push(gridCell);
+                }
+            }
         }
 
-        const maxColumnCount = rows.reduce((max, row) => Math.max(max, row.length), 0);
-        const maxLengths = new Array<number>(Math.max(maxColumnCount, 1)).fill(1);
-
-        for (const row of rows) {
-            for (let index = 0; index < maxLengths.length; index += 1) {
-                const cell = row[index];
-                if (cell) {
-                    maxLengths[index] = Math.max(maxLengths[index], estimateCellMaxDisplayLength(cell));
+        // Pass 2: resolve smaller horizontal spans before wider banners so merged cells
+        // only top up columns when their content exceeds combined single-column capacity.
+        mergedCells.sort((a, b) => a.colSpan - b.colSpan);
+        for (const gridCell of mergedCells) {
+            const spanEnd = Math.min(safeColCount, gridCell.col + gridCell.colSpan);
+            const spanCols = spanEnd - gridCell.col;
+            if (spanCols <= 0) {
+                continue;
+            }
+            const requiredLength = estimateCellMaxDisplayLength(gridCell.cell);
+            let currentSpanSum = 0;
+            for (let c = gridCell.col; c < spanEnd; c += 1) {
+                currentSpanSum += maxLengths[c];
+            }
+            const deficit = requiredLength - currentSpanSum;
+            if (deficit > 0) {
+                const share = Math.floor(deficit / spanCols);
+                const remainder = deficit % spanCols;
+                for (let offset = 0; offset < spanCols; offset += 1) {
+                    maxLengths[gridCell.col + offset] += share + (offset < remainder ? 1 : 0);
                 }
             }
         }

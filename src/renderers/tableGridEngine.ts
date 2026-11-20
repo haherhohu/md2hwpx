@@ -153,3 +153,23 @@ export function buildMergedTableGrid(
 
     return grid;
 }
+
+/**
+ * Updates each cell's width in a merged grid from resolved per-column widths.
+ */
+export function applyColumnWidthsToGrid(grid: MergedTableCell[][], columnWidths: number[]): void {
+    for (const row of grid) {
+        for (const gridCell of row) {
+            if (gridCell.absorbed) {
+                gridCell.width = 0;
+                continue;
+            }
+            let widthSum = 0;
+            const endCol = Math.min(columnWidths.length, gridCell.col + gridCell.colSpan);
+            for (let colIndex = gridCell.col; colIndex < endCol; colIndex += 1) {
+                widthSum += columnWidths[colIndex];
+            }
+            gridCell.width = widthSum;
+        }
+    }
+}

@@ -55,18 +55,19 @@ suite("HWPX Generator Regression Suite", () => {
         assert.ok(!normalized.some((token) => token.type === "blockquote"));
     });
 
-    test("renders table with template printable width (42520), pageBreak CELL, zero left/right outMargin, and non treat-as-character placement", async () => {
+    test("renders table with template printable width (42520), pageBreak TABLE, zero left/right outMargin, and non treat-as-character placement", async () => {
         const sectionXml = await generateSectionXml(`| A | B |\n| - | - |\n| 1 | 2 |`);
         assert.ok(sectionXml.includes('treatAsChar="0"'));
-        assert.ok(sectionXml.includes('pageBreak="CELL"'));
+        assert.ok(sectionXml.includes('pageBreak="TABLE"'));
         assert.ok(sectionXml.includes('width="42520"'));
         assert.ok(sectionXml.includes('<hp:outMargin left="0" right="0" top="141" bottom="141"/>'));
     });
 
-    test("renders plain blockquote as 1x1 callout table", async () => {
+    test("renders plain blockquote as 1x1 callout table with pageBreak CELL", async () => {
         const sectionXml = await generateSectionXml(`> just quote`);
         assert.ok(sectionXml.includes("just quote"));
         assert.ok(sectionXml.includes("<hp:tbl"));
+        assert.ok(sectionXml.includes('pageBreak="CELL"'));
     });
 
     test("renders plain tables and mixed list+table without dropping tables", async () => {
