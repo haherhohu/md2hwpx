@@ -2,6 +2,10 @@
 
 All major updates and bug fixes are recorded here.
 
+## [0.0.5]
+
+- **Multi-Page Table Splitting (`셀 단위로 나눔`) & Merged Column Width Safeguard:** Set data tables (`numberingType="TABLE"`) to `pageBreak="TABLE"` (splitting tables across pages at cell boundaries while keeping `pageBreak="CELL"` on 1×1 callout/code boxes), resolved 2D `<`/`^` merges before measuring column widths so wide merged banners do not inflate Column 0, and enforced a `3000` hwpunit minimum column width floor (~2.4 Korean characters, scaling proportionally when `colCnt > 14`).
+
 ## [0.0.4]
 
 ### Added

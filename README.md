@@ -9,7 +9,7 @@ This is an extension that converts Markdown (.md) documents written in VS Code i
 ## Key Features
 
 - **One-Click HWPX Export:** Converts `.md` files in VS Code into OWPML-compliant `.hwpx` files in the same folder.
-- **Typography & Inline Styles:** Supports `H1`–`H6`, `**bold**`, `*italic*`, `~~strikethrough~~`, `<u>underline</u>`, `<sup>`/`<sub>`, and Korean particle / Unicode punctuation boundaries (e.g., `**단어(ABC)**가`, `**기관(KCL)**·`) without misparsing inline code, URLs, or single-tilde ranges (`1~3`).
+- **Typography & Inline Styles:** Supports `H1`–`H6`, `**bold**`, `*italic*`, `~~strikethrough~~`, `<u>underline</u>`, `<sup>`/`<sub>`, and Korean particle / Unicode punctuation boundaries (e.g., `**단어(ABC)**가`, `**기관(DEF)**·`) without misparsing inline code, URLs, or single-tilde ranges (`1~3`).
 - **Multilevel Lists & Callouts:** Converts 6-level nested lists with hanging indents, renders blockquotes and fenced code blocks as left-aligned callout boxes, and handles horizontal rules (`---`) and page breaks (`---` × 2).
 - **Tables & Captions:** Converts Markdown and HTML tables with column alignment, `<br>` line splits, 2D cell merges (`^`, `<`, `\\`), cell-level page breaks, and automatic top/bottom captions (`[표 1-1]`, `[그림 1-1]`).
 - **Images & 300 DPI SVG:** Embeds local images (PNG/JPEG/GIF/WebP) preserving original dimensions and aspect ratios, renders `.svg` files and inline `<svg>` diagrams at 300 DPI PNG via `@resvg/resvg-wasm`, and generates visible placeholders for missing images.
@@ -34,12 +34,13 @@ This is an extension that converts Markdown (.md) documents written in VS Code i
 
 ## Release Notes
 
-### 0.0.4
+### 0.0.5
 
 - Re-architected the parser and renderer into a modular `marked` AST pipeline (`StyleRegistry`, `TableRenderer`, `ImageRenderer`, `InlineRenderer`) with centralized constants (`hwpxConstants.ts`).
 - Added native LaTeX-to-HWP equation (`<hp:equation>`) conversion and 2D table cell merging (`^`, `<`, `\\`) with column alignment support.
 - Added binary image dimension parsing (PNG/JPEG/GIF/WebP) to preserve natural image sizes and aspect ratios, plus visible 800×450 placeholder PNGs for all missing image formats.
 - Fixed single-tilde range false strikethroughs (`~~` only), Unicode punctuation emphasis boundaries (`·`, quotes), crossed overlapping emphasis (`~~...**...~~...**`), and contiguous `paraPr` hanging indents / left alignment for endnotes.
+- Improved multi-page table splitting ("셀 단위로 나눔") and merged-table column width balancing with a ~2.4-character minimum column width safeguard.
 
 You can view the full update history in [CHANGELOG.md](CHANGELOG.md)
 
